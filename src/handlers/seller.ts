@@ -4,7 +4,7 @@ import { extractSellerProducts } from '../extractors/seller/products.js';
 import { extractSellerHeader } from '../extractors/seller/header.js';
 import { extractSellerAbout } from '../extractors/seller/about.js';
 import { extractSellerFeedback } from '../extractors/seller/feedback.js';
-import { emptySeller, emptyTechnical } from '../utils/defaults.js';
+import { emptySeller } from '../utils/defaults.js';
 import { extractSellerId } from '../utils/parse.js';
 
 /**
@@ -92,10 +92,7 @@ export async function handleSeller(ctx: PlaywrightCrawlingContext, mode: Capture
         product: null,
         sellerRef: { platformSellerId: seller.platformSellerId, name: seller.name, url: seller.url },
         seller,
-        technical: emptyTechnical(),
-        sellerTechnical: emptyTechnical(),
     };
     response.seller = seller;
-    response.sellerTechnical = response.sellerTechnical ?? emptyTechnical();
     await pushData(response);
 }

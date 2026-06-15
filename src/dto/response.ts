@@ -14,6 +14,8 @@ export interface ProductSellerResponse {
     product: Product | null;
     sellerRef: SellerRef | null;
     seller: Seller | null;
-    technical: Technical;
-    sellerTechnical: SellerTechnical | null;
+    // Temporarily disabled — not emitted to the dataset for now. Kept optional so the
+    // diagnostic blocks can be re-enabled without changing the contract.
+    technical?: Technical;
+    sellerTechnical?: SellerTechnical | null;
 }

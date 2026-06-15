@@ -10,7 +10,7 @@ import { extractAvailableQuantity } from '../extractors/product/stock.js';
 import { extractReviews } from '../extractors/product/reviews.js';
 import { extractShipping } from '../extractors/product/shipping.js';
 import { extractSellerInline } from '../extractors/product/seller.js';
-import { emptyProduct, emptySeller, emptyTechnical } from '../utils/defaults.js';
+import { emptyProduct, emptySeller } from '../utils/defaults.js';
 import { extractProductId } from '../utils/parse.js';
 import { LABELS } from '../labels.js';
 
@@ -123,8 +123,6 @@ export async function handleProduct(ctx: PlaywrightCrawlingContext, mode: Captur
         product,
         sellerRef: null,
         seller: null,
-        technical: emptyTechnical(),
-        sellerTechnical: null,
     };
 
     // In product_and_seller mode, resolve the seller from the PDP's "About the Store"
