@@ -34,24 +34,71 @@ export async function handleProduct(ctx: PlaywrightCrawlingContext, mode: Captur
     // Read-only extractors + the reviews API call can run concurrently. extractMedia
     // hovers the gallery (a DOM side effect), so it must run AFTER the price/title
     // reads to avoid racing them — otherwise the price read can pick up the wrong value.
+    // Each extractor logs its own line as soon as it resolves, so a tester can watch
+    // the run and see exactly what each piece of the Product DTO collected.
     const [title, pricing, specifications, headline, availableQuantity, reviews, shipping] = await Promise.all([
-        extractTitle(page),
-        extractPricing(page),
-        extractSpecifications(page),
-        extractHeadlineStats(page),
-        extractAvailableQuantity(page),
-        extractReviews(page, id),
-        extractShipping(page),
+        extractTitle(page).then((r) => {
+            log.info(`[product] title: ${r ?? '(none)'}`);
+            return r;
+        }),
+        extractPricing(page).then((r) => {
+            log.info('[product] pricing', {
+                price: r.price,
+                originalPrice: r.originalPrice,
+                currency: r.currency,
+                unit: r.unit,
+                priceMin: r.priceMin,
+                priceMax: r.priceMax,
+            });
+            return r;
+        }),
+        extractSpecifications(page).then((r) => {
+            log.info(`[product] specifications: count=${r.length}`);
+            return r;
+        }),
+        extractHeadlineStats(page).then((r) => {
+            log.info('[product] headlineStats', { rating: r.rating, reviewCount: r.reviewCount, soldCount: r.soldCount });
+            return r;
+        }),
+        extractAvailableQuantity(page).then((r) => {
+            log.info(`[product] availableQuantity: ${r ?? '(none)'}`);
+            return r;
+        }),
+        extractReviews(page, id).then((r) => {
+            log.info('[product] reviews', {
+                reviewSamples: r.reviewSamples.length,
+                ratingBreakdown: r.ratingBreakdown,
+            });
+            return r;
+        }),
+        extractShipping(page).then((r) => {
+            log.info('[product] shipping', {
+                options: r.options.length,
+                deliveryTimeText: r.deliveryTimeText,
+                shippingProtection: r.shippingProtection,
+            });
+            return r;
+        }),
     ]);
     const media = await extractMedia(page);
+    log.info('[product] media', { images: media.images.length, videos: media.videos.length });
 
     // Runs after the price/title reads: scrolls to the bottom to mount the lazy
     // description block (same DOM side effect as extractSellerInline below).
     const description = await extractDescription(page);
+    log.info('[product] description', { plainTextChars: description.plainText.length, htmlChars: description.html.length });
 
     // Runs last: it scrolls to the bottom of the page (a DOM side effect), so it must
     // not race the price/title reads above. Only needed when we also want the seller.
     const sellerInline = wantSeller ? await extractSellerInline(page) : null;
+    if (sellerInline) {
+        log.info('[product] sellerInline', {
+            sellerId: sellerInline.ref.platformSellerId,
+            name: sellerInline.ref.name,
+            positiveFeedbackPercent: sellerInline.positiveFeedbackPercent,
+            badges: sellerInline.badges.length,
+        });
+    }
 
     const product = emptyProduct();
     product.id = id;
@@ -94,21 +141,7 @@ export async function handleProduct(ctx: PlaywrightCrawlingContext, mode: Captur
         response.seller = seller;
     }
 
-    log.info(`Product scraped: ${product.title}`, {
-        id: product.id,
-        price: pricing.price,
-        currency: pricing.currency,
-        images: media.images.length,
-        videos: media.videos.length,
-        descriptionChars: description.plainText.length,
-        specs: product.specifications.length,
-        rating: headline.rating,
-        reviews: headline.reviewCount,
-        sold: headline.soldCount,
-        stock: availableQuantity,
-        reviewSamples: reviews.reviewSamples.length,
-        ratingBreakdown: reviews.ratingBreakdown,
-    });
+    log.info(`[product] scraped: ${product.title || '(no title)'} (id=${product.id || '(none)'})`);
 
     // Hand off to the seller store page so the seller handler can enrich the
     // profile and push ONE merged row. The full response is carried in userData.

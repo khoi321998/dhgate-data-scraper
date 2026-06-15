@@ -26,12 +26,43 @@ export async function handleSeller(ctx: PlaywrightCrawlingContext, mode: Capture
     // Store-page extractors (more will be added as their DOM is mapped).
     // Read the landing page (top-selling) FIRST, then visit the About Us tab —
     // extractSellerAbout navigates away, so anything read off this page must run before it.
+    // Each extractor logs its own line as soon as it resolves, so a tester can watch
+    // the run and see exactly what each piece of the Seller DTO collected.
     const productPreviews = await extractSellerProducts(page);
+    log.info(`[seller] productPreviews: count=${productPreviews.length}`);
+
     const header = await extractSellerHeader(page);
+    log.info('[seller] header', {
+        name: header.name,
+        avatarUrl: header.avatarUrl ? 'yes' : null,
+        positiveFeedbackPercent: header.positiveFeedbackPercent,
+        transactions: header.transactions,
+        badges: header.badges.length,
+        badgeLabels: header.badges,
+    });
+
     // These navigate to other store tabs, so they must run AFTER the landing-page reads.
     // About Us first: its page still carries the store nav, so the Review tab is reachable from it.
     const about = await extractSellerAbout(page);
+    if (about) {
+        log.info('[seller] about', {
+            fields: Object.values(about).filter((v) => v != null && v !== '').length,
+            companyName: about.companyName ?? null,
+            location: about.location ?? null,
+            yearEstablished: about.yearEstablished ?? null,
+            introductionChars: about.introduction?.length ?? 0,
+        });
+    } else {
+        log.info('[seller] about: (none)');
+    }
+
     const feedback = await extractSellerFeedback(page);
+    log.info('[seller] feedback', {
+        sellerReviews: feedback.reviews.length,
+        positiveFeedbackPercent: feedback.positiveFeedbackPercent,
+        transactions: feedback.transactions,
+        reviewScore: feedback.reviewScore ?? null,
+    });
 
     // Start from the inline seller carried off the PDP, or a fresh profile for seller_only.
     const seller: Seller = partial?.seller ?? emptySeller();
@@ -66,15 +97,5 @@ export async function handleSeller(ctx: PlaywrightCrawlingContext, mode: Capture
     };
     response.seller = seller;
     response.sellerTechnical = response.sellerTechnical ?? emptyTechnical();
-
-    log.info(`Seller scraped: ${seller.name ?? '(unknown)'}`, {
-        sellerId: seller.platformSellerId,
-        url: seller.url,
-        productPreviews: productPreviews.length,
-        about: about ? Object.keys(about) : [],
-        reviewScore: feedback.reviewScore,
-        reviews: feedback.reviews.length,
-    });
-
     await pushData(response);
 }
