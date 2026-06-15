@@ -1,0 +1,34 @@
+{
+    "$schema": "https://apify.com/schemas/v1/input.ide.json",
+    "title": "PlaywrightCrawler Template",
+    "type": "object",
+    "schemaVersion": 1,
+    "properties": {
+        "startUrls": {
+            "title": "Start URLs",
+            "type": "array",
+            "description": "Product detail URLs (for product_only / product_and_seller) or seller/store URLs (for seller_only).",
+            "editor": "requestListSources",
+            "prefill": [
+                {
+                    "url": "https://www.dhgate.com/product/men-s-polos-luxury-brand-short-sleeve-polo/1064214730.html"
+                }
+            ]
+        },
+        "mode": {
+            "title": "Crawl mode",
+            "type": "string",
+            "description": "What to capture: 'product_only' scrapes the product; 'product_and_seller' scrapes the product and its seller; 'seller_only' scrapes only the seller from a seller/store URL.",
+            "editor": "select",
+            "enum": ["product_only", "product_and_seller", "seller_only"],
+            "enumTitles": ["Product only", "Product and seller", "Seller only"],
+            "default": "product_only"
+        },
+        "maxRequestsPerCrawl": {
+            "title": "Max Requests per Crawl",
+            "type": "integer",
+            "description": "Maximum number of requests that can be made by this crawler.",
+            "default": 100
+        }
+    }
+}
