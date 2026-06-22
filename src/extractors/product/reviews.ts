@@ -13,18 +13,10 @@ interface RawReview {
     content?: string;
     score?: number;
     createdDateText?: string;
-    country?: string;
-    countryFullname?: string;
-    prodAttrs?: { attrname: string; attrvalue: string }[] | null;
     reviewAttach?: { imgs?: { imgUrl?: string }[] | null } | null;
 }
 
 function mapReview(raw: RawReview): ReviewSample {
-    const sku =
-        Array.isArray(raw.prodAttrs) && raw.prodAttrs.length > 0
-            ? raw.prodAttrs.map((a) => `${a.attrname}:${a.attrvalue}`).join(', ')
-            : null;
-
     const images = (raw.reviewAttach?.imgs ?? [])
         .map((i) => i.imgUrl)
         .filter((u): u is string => typeof u === 'string');
@@ -33,12 +25,9 @@ function mapReview(raw: RawReview): ReviewSample {
         user: raw.buyerNickname ?? '',
         userFeedbackScore: null,
         comment: raw.content ?? '',
-        commentTranslated: null,
-        country: raw.country ? raw.country.toUpperCase() : (raw.countryFullname ?? null),
         commentDate: raw.createdDateText ?? '',
         rating: typeof raw.score === 'number' ? raw.score : null,
         verifiedPurchase: false, // DHGate's review API exposes no reliable verified flag
-        sku,
         images,
     };
 }

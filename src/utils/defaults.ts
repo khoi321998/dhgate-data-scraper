@@ -5,9 +5,6 @@ import type { Technical } from '../dto/index.js';
 export function emptyPricing(): Pricing {
     return {
         currency: 'USD',
-        price: null,
-        originalPrice: null,
-        unit: null,
         priceMin: null,
         priceMax: null,
     };
@@ -19,8 +16,6 @@ export function emptyReviewsSummary(): ReviewsSummary {
         reviewCount: null,
         ratingBreakdown: { '1': 0, '2': 0, '3': 0, '4': 0, '5': 0 },
         reviewSamples: [],
-        authenticityKeywords: [],
-        buyerMediaCounts: { images: 0, videos: 0 },
     };
 }
 
@@ -29,12 +24,12 @@ export function emptyProduct(): Product {
     return {
         id: '',
         title: '',
-        brand: null,
         pricing: emptyPricing(),
         stock: { availableQuantity: null, soldCount: null },
-        condition: { conditionText: null, returnPolicySummary: null, guaranteeLabels: [] },
-        shipping: { options: [], deliveryTimeText: null, shippingProtection: null },
-        paymentMethods: [],
+        deliveryTimeText: null,
+        // DHGate shows the same payment-provider logos on every PDP, so hard-code
+        // the list rather than scraping the (purely visual) logo strip.
+        paymentMethods: ['Amex', 'Diners', 'Discover', 'Mastercard', 'Visa', 'Klarna', 'Google Pay', 'Apple Pay'],
         description: { html: '', plainText: '' },
         specifications: [],
         media: { images: [], videos: [] },

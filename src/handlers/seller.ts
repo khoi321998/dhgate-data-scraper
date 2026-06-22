@@ -62,6 +62,9 @@ export async function handleSeller(ctx: PlaywrightCrawlingContext, mode: Capture
         positiveFeedbackPercent: feedback.positiveFeedbackPercent,
         transactions: feedback.transactions,
         reviewScore: feedback.reviewScore ?? null,
+        serviceScore: feedback.serviceScore
+            ? { industry: feedback.serviceScore.industry, items: feedback.serviceScore.items.length }
+            : null,
     });
 
     // Start from the inline seller carried off the PDP, or a fresh profile for seller_only.
@@ -82,6 +85,7 @@ export async function handleSeller(ctx: PlaywrightCrawlingContext, mode: Capture
     seller.transactions = header.transactions ?? feedback.transactions ?? seller.transactions;
     if (about) seller.about = about;
     if (feedback.reviewScore) seller.reviewScore = feedback.reviewScore;
+    if (feedback.serviceScore) seller.serviceScore = feedback.serviceScore;
     if (feedback.reviews.length > 0) seller.sellerReviews = feedback.reviews;
 
     const response: ProductSellerResponse = partial ?? {

@@ -1,5 +1,5 @@
 import type { Page } from 'playwright';
-import type { SellerReviewScore, SellerReviewSample } from '../../dto/index.js';
+import type { SellerReviewScore, SellerReviewSample, SellerServiceScore, SellerServiceScoreItem } from '../../dto/index.js';
 import { stripUrlParams, parseCompactNumber, parseAmount } from '../../utils/parse.js';
 
 /** Cap on how many seller reviews we keep. */
@@ -9,6 +9,8 @@ const MAX_REVIEWS = 10;
 export interface SellerFeedback {
     reviewScore: SellerReviewScore | null;
     reviews: SellerReviewSample[];
+    /** "Service Detail Score" breakdown (Items as described, Communication, …). */
+    serviceScore: SellerServiceScore | null;
     /** Positive review % from the review page header (fallback when the store header lacks it). */
     positiveFeedbackPercent: number | null;
     /** Transactions count from the review page header. */
@@ -24,7 +26,13 @@ export interface SellerFeedback {
  * - `.review-list-pro` (dl)     -> one review card each (capped at {@link MAX_REVIEWS})
  */
 export async function extractSellerFeedback(page: Page): Promise<SellerFeedback> {
-    const empty: SellerFeedback = { reviewScore: null, reviews: [], positiveFeedbackPercent: null, transactions: null };
+    const empty: SellerFeedback = {
+        reviewScore: null,
+        reviews: [],
+        serviceScore: null,
+        positiveFeedbackPercent: null,
+        transactions: null,
+    };
 
     // DHGate reuses spm-c="oncreview" for BOTH the "Store Membership" and the real
     // "Review" nav links, so the bare attribute + .first() lands on Membership.
@@ -43,6 +51,7 @@ export async function extractSellerFeedback(page: Page): Promise<SellerFeedback>
     return {
         reviewScore: await extractReviewScore(page),
         reviews: await extractReviews(page),
+        serviceScore: await extractServiceScore(page),
         positiveFeedbackPercent: stats.positiveFeedbackPercent,
         transactions: stats.transactions,
     };
@@ -94,6 +103,50 @@ async function totalFor(table: ReturnType<Page['locator']>, marker: string): Pro
     const cell = table.locator(`tr:has(${marker}) td:last-child`).first();
     if ((await cell.count()) === 0) return null;
     return parseCompactNumber(await readText(cell));
+}
+
+/**
+ * Parse the "Service Detail Score" table (`.service-score`):
+ *   <div class="bt">Service Detail Score <b class="review-style">(Mainly Industry : Pet Supplies)</b></div>
+ *   <table class="list"> ... one <tr> per aspect (Items as described, Communication, …) </table>
+ *
+ * Each data row (skipping the `.fbt` header row) has four cells:
+ *   [0] detail name  [1] score (`.jdt[title]` + "4.9 / 5.0" text)  [2] vs industry  [3] # of ratings.
+ * We keep the detail name, score, and number of ratings.
+ */
+async function extractServiceScore(page: Page): Promise<SellerServiceScore | null> {
+    const block = page.locator('.service-score').first();
+    await block.waitFor({ state: 'attached', timeout: 10_000 }).catch(() => {});
+    if ((await block.count()) === 0) return null;
+
+    const industry = parseIndustry(await readText(block.locator('.bt .review-style').first()));
+
+    const items: SellerServiceScoreItem[] = [];
+    for (const row of await block.locator('table.list tr').all()) {
+        // Skip the header row (`.fbt`), which has no `.jdt` score cell.
+        if ((await row.locator('.jdt').count()) === 0) continue;
+        const cells = row.locator('td');
+        if ((await cells.count()) < 4) continue;
+
+        const detail = (await readText(cells.nth(0))) || null;
+        // Prefer the `.jdt` div's title ("4.9"); fall back to the visible "4.9 / 5.0" text.
+        const score =
+            parseAmount(await readAttr(row.locator('.jdt').first(), 'title')) ??
+            parseAmount(await readText(cells.nth(1)));
+        const numberOfRatings = parseCompactNumber(await readText(cells.nth(3)));
+
+        items.push({ detail, score, numberOfRatings });
+    }
+
+    if (items.length === 0) return null;
+    return { industry, items };
+}
+
+/** Pull the industry out of "(Mainly Industry : Pet Supplies)" -> "Pet Supplies". */
+function parseIndustry(text: string): string | null {
+    if (!text) return null;
+    const match = text.match(/industry\s*:\s*([^)]+)/i);
+    return match ? match[1].trim() : null;
 }
 
 /** Parse the "Reviews Received" list (`.review-list-pro` cards), capped at MAX_REVIEWS. */

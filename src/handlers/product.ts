@@ -8,7 +8,7 @@ import { extractSpecifications } from '../extractors/product/specifications.js';
 import { extractHeadlineStats } from '../extractors/product/headlineStats.js';
 import { extractAvailableQuantity } from '../extractors/product/stock.js';
 import { extractReviews } from '../extractors/product/reviews.js';
-import { extractShipping } from '../extractors/product/shipping.js';
+import { extractDeliveryTimeText } from '../extractors/product/shipping.js';
 import { extractSellerInline } from '../extractors/product/seller.js';
 import { emptyProduct, emptySeller } from '../utils/defaults.js';
 import { extractProductId } from '../utils/parse.js';
@@ -36,17 +36,14 @@ export async function handleProduct(ctx: PlaywrightCrawlingContext, mode: Captur
     // reads to avoid racing them — otherwise the price read can pick up the wrong value.
     // Each extractor logs its own line as soon as it resolves, so a tester can watch
     // the run and see exactly what each piece of the Product DTO collected.
-    const [title, pricing, specifications, headline, availableQuantity, reviews, shipping] = await Promise.all([
+    const [title, pricing, specifications, headline, availableQuantity, reviews, deliveryTimeText] = await Promise.all([
         extractTitle(page).then((r) => {
             log.info(`[product] title: ${r ?? '(none)'}`);
             return r;
         }),
         extractPricing(page).then((r) => {
             log.info('[product] pricing', {
-                price: r.price,
-                originalPrice: r.originalPrice,
                 currency: r.currency,
-                unit: r.unit,
                 priceMin: r.priceMin,
                 priceMax: r.priceMax,
             });
@@ -71,12 +68,8 @@ export async function handleProduct(ctx: PlaywrightCrawlingContext, mode: Captur
             });
             return r;
         }),
-        extractShipping(page).then((r) => {
-            log.info('[product] shipping', {
-                options: r.options.length,
-                deliveryTimeText: r.deliveryTimeText,
-                shippingProtection: r.shippingProtection,
-            });
+        extractDeliveryTimeText(page).then((r) => {
+            log.info(`[product] deliveryTimeText: ${r ?? '(none)'}`);
             return r;
         }),
     ]);
@@ -107,7 +100,7 @@ export async function handleProduct(ctx: PlaywrightCrawlingContext, mode: Captur
     product.specifications = specifications;
     product.media = media;
     product.description = description;
-    product.shipping = shipping;
+    product.deliveryTimeText = deliveryTimeText;
     product.stock.soldCount = headline.soldCount;
     product.stock.availableQuantity = availableQuantity;
     product.reviewsSummary.rating = headline.rating;

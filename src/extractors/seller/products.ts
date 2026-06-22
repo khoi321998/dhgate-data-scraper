@@ -66,7 +66,6 @@ export async function extractSellerProducts(page: Page): Promise<SellerProductPr
         const price = parseAmount(priceText);
         const originalPrice = parseAmount(originalPriceText);
 
-        const soldText = (await readText(item.locator('.pro-sold .num').first())) || null;
         // The preview strip often renders an EMPTY .pro-rating (no `.rating > span`).
         // getAttribute on a zero-match locator waits out the full action timeout and
         // throws, so guard with readAttr (count-checked) instead of calling it directly.
@@ -85,12 +84,9 @@ export async function extractSellerProducts(page: Page): Promise<SellerProductPr
                 url,
                 imageUrl,
                 price,
-                priceText,
                 originalPrice,
                 originalPriceText,
                 discountPercent: discountPercent(price, originalPrice),
-                soldCount: parseCompactNumber(soldText),
-                soldText,
                 rating: ratingFromWidth(ratingStyle),
                 reviewCount: parseCompactNumber(reviewText),
             }),

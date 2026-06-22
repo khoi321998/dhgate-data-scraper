@@ -18,13 +18,10 @@ export interface SellerProductPreview {
     url?: string;
     imageUrl?: string;
     price?: number;
-    priceText?: string;
     originalPrice?: number;
     originalPriceText?: string;
     /** Discount magnitude as a positive percentage (e.g. 50 for "-50%"). */
     discountPercent?: number;
-    soldCount?: number;
-    soldText?: string;
     /** Star rating 0–5, derived from the rating bar's fill width. */
     rating?: number;
     /** Number of reviews shown next to the rating. */
@@ -71,6 +68,24 @@ export interface SellerReviewScore {
     negative: number | null;
 }
 
+/** One row of the "Service Detail Score" table on the store's Review page. */
+export interface SellerServiceScoreItem {
+    /** Service aspect, e.g. "Items as described", "Communication". */
+    detail: string | null;
+    /** Score 0–5, e.g. 4.9. */
+    score: number | null;
+    /** Number of ratings the aspect is based on, e.g. 6078. */
+    numberOfRatings: number | null;
+}
+
+/** The store's "Service Detail Score" block from the Review page. */
+export interface SellerServiceScore {
+    /** Industry the scores are benchmarked against, e.g. "Pet Supplies". */
+    industry: string | null;
+    /** One entry per service aspect (Items as described, Communication, …). */
+    items: SellerServiceScoreItem[];
+}
+
 /** Full seller profile. Shape extends as more seller fields are scraped. */
 export interface Seller {
     platformSellerId: string | null;
@@ -85,6 +100,8 @@ export interface Seller {
     badges: string[];
     /** Positive/neutral/negative feedback totals from the store's Review page. */
     reviewScore?: SellerReviewScore;
+    /** "Service Detail Score" breakdown (Items as described, Communication, …) from the Review page. */
+    serviceScore?: SellerServiceScore;
     /** Extra info from the store's "About Us" tab (Basic Information + introduction). */
     about?: SellerAbout;
     /** Other products by this seller, scraped from the PDP recommendation strip. */
