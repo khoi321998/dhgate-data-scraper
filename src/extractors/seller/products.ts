@@ -38,6 +38,19 @@ function discountPercent(price: number | null, originalPrice: number | null): nu
 const MAX_PREVIEWS = 10;
 
 export async function extractSellerProducts(page: Page): Promise<SellerProductPreview[]> {
+    // The `#proGallery .gitem` strip only exists on the store's Top-Selling tab — NOT on
+    // the about-us page a seller_only run starts from, nor on the store home a PDP's store
+    // link points to (home uses `.gitemwrap .gitem`, with no `#proGallery` wrapper). Click
+    // the Top-Selling tab in the store nav to get there. That page still carries the full
+    // store header and the About Us nav link, so the header/about/feedback extractors that
+    // read the page afterwards keep working. Skip the click when we're already on that tab.
+    if (!/\/store\/top-selling\//.test(page.url())) {
+        const topSellingTab = page.locator('#storeNav a[spm-c="onctopsell"]').first();
+        if ((await topSellingTab.count()) > 0) {
+            await topSellingTab.click().catch(() => {});
+        }
+    }
+
     const gallery = page.locator('#proGallery .gitem');
     await gallery
         .first()
