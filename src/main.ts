@@ -23,10 +23,6 @@ const {
 const startLabel = mode === 'seller_only' ? LABELS.SELLER : LABELS.PRODUCT;
 const requests = startUrls.map((req) => ({ ...req, label: startLabel }));
 
-// Show the browser window when running locally for testing; force headless
-// on the Apify platform, where there is no display.
-const isAtHome = Actor.isAtHome();
-
 // Force DHGate to render in English, ship to the US, and price in USD,
 // regardless of the (proxy) IP geolocation. These three cookies control the
 // locale/ship-to/currency the storefront uses.
@@ -40,7 +36,7 @@ const crawler = new PlaywrightCrawler({
     // No proxy for now — running against DHGate directly.
     maxRequestsPerCrawl,
     requestHandler: createRouter(mode),
-    headless: isAtHome,
+    headless: true,
     preNavigationHooks: [
         async ({ page }) => {
             // Set the locale cookies before the first navigation so the very
