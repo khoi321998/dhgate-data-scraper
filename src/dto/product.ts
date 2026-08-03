@@ -71,6 +71,7 @@ export interface Product {
     stock: Stock;
     /** Free-text delivery estimate shown in the buy box, e.g. "15 Days Delivery". */
     deliveryTimeText: string | null;
+    /** Accepted payment method logo URLs, as shown in the "Buyer Protection" modal. */
     paymentMethods: string[];
     description: Description;
     specifications: Specification[];

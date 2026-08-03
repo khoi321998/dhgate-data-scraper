@@ -9,6 +9,7 @@ import { extractHeadlineStats } from '../extractors/product/headlineStats.js';
 import { extractAvailableQuantity } from '../extractors/product/stock.js';
 import { extractReviews } from '../extractors/product/reviews.js';
 import { extractDeliveryTimeText } from '../extractors/product/shipping.js';
+import { extractPaymentMethods } from '../extractors/product/paymentMethods.js';
 import { extractSellerInline } from '../extractors/product/seller.js';
 import { emptyProduct, emptySeller } from '../utils/defaults.js';
 import { extractProductId } from '../utils/parse.js';
@@ -76,6 +77,11 @@ export async function handleProduct(ctx: PlaywrightCrawlingContext, mode: Captur
     const media = await extractMedia(page);
     log.info('[product] media', { images: media.images.length, videos: media.videos.length });
 
+    // Runs after the price/title reads: opens the "Buyer Protection" modal (a DOM
+    // side effect), so it must not race the concurrent reads above.
+    const paymentMethods = await extractPaymentMethods(page);
+    log.info(`[product] paymentMethods: ${paymentMethods.join(', ') || '(none)'}`);
+
     // Runs after the price/title reads: scrolls to the bottom to mount the lazy
     // description block (same DOM side effect as extractSellerInline below).
     const description = await extractDescription(page);
@@ -99,6 +105,7 @@ export async function handleProduct(ctx: PlaywrightCrawlingContext, mode: Captur
     product.pricing = pricing;
     product.specifications = specifications;
     product.media = media;
+    product.paymentMethods = paymentMethods;
     product.description = description;
     product.deliveryTimeText = deliveryTimeText;
     product.stock.soldCount = headline.soldCount;

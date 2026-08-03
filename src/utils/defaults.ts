@@ -27,9 +27,7 @@ export function emptyProduct(): Product {
         pricing: emptyPricing(),
         stock: { availableQuantity: null, soldCount: null },
         deliveryTimeText: null,
-        // DHGate shows the same payment-provider logos on every PDP, so hard-code
-        // the list rather than scraping the (purely visual) logo strip.
-        paymentMethods: ['Amex', 'Diners', 'Discover', 'Mastercard', 'Visa', 'Klarna', 'Google Pay', 'Apple Pay'],
+        paymentMethods: [],
         description: { html: '', plainText: '' },
         specifications: [],
         media: { images: [], videos: [] },
