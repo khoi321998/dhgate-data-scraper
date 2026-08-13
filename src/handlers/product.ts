@@ -13,6 +13,8 @@ import { extractPaymentMethods } from '../extractors/product/paymentMethods.js';
 import { extractSellerInline } from '../extractors/product/seller.js';
 import { emptyProduct, emptySeller } from '../utils/defaults.js';
 import { extractProductId } from '../utils/parse.js';
+import { emptyExtractionReport } from '../extraction-audit.js';
+import { pushItem } from '../push.js';
 import { LABELS } from '../labels.js';
 
 /**
@@ -23,7 +25,7 @@ import { LABELS } from '../labels.js';
  * `mode` is threaded in so we know whether to also enqueue the seller later.
  */
 export async function handleProduct(ctx: PlaywrightCrawlingContext, mode: CaptureMode): Promise<void> {
-    const { request, page, log, pushData, addRequests } = ctx;
+    const { request, page, log, addRequests } = ctx;
     const url = request.loadedUrl ?? request.url;
     const wantSeller = mode === 'product_and_seller';
 
@@ -123,6 +125,8 @@ export async function handleProduct(ctx: PlaywrightCrawlingContext, mode: Captur
         product,
         sellerRef: null,
         seller: null,
+        // Placeholder — pushItem() overwrites this with the real audit right before the push.
+        extraction: emptyExtractionReport(),
     };
 
     // In product_and_seller mode, resolve the seller from the PDP's "About the Store"
@@ -166,5 +170,5 @@ export async function handleProduct(ctx: PlaywrightCrawlingContext, mode: Captur
     }
 
     // No seller to visit (product_only, or the seller block was missing): push as-is.
-    await pushData(response);
+    await pushItem(ctx, response);
 }

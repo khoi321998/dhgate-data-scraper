@@ -1,4 +1,5 @@
 import type { Platform, CaptureMode } from './common.js';
+import type { ExtractionReport } from './extraction.js';
 import type { Product } from './product.js';
 import type { SellerRef, Seller } from './seller.js';
 import type { Technical, SellerTechnical } from './technical.js';
@@ -14,6 +15,12 @@ export interface ProductSellerResponse {
     product: Product | null;
     sellerRef: SellerRef | null;
     seller: Seller | null;
+    /**
+     * Health of this row's extraction: which fields we expected to find were actually there.
+     * Filled in by {@link pushItem} immediately before the row is pushed — a `status` other
+     * than `ok` usually means a DHGate markup change broke a selector.
+     */
+    extraction: ExtractionReport;
     // Temporarily disabled — not emitted to the dataset for now. Kept optional so the
     // diagnostic blocks can be re-enabled without changing the contract.
     technical?: Technical;

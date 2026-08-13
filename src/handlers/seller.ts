@@ -6,6 +6,8 @@ import { extractSellerAbout } from '../extractors/seller/about.js';
 import { extractSellerFeedback } from '../extractors/seller/feedback.js';
 import { emptySeller } from '../utils/defaults.js';
 import { extractSellerId } from '../utils/parse.js';
+import { emptyExtractionReport } from '../extraction-audit.js';
+import { pushItem } from '../push.js';
 
 /**
  * Handle a DHGate seller/store page.
@@ -18,7 +20,7 @@ import { extractSellerId } from '../utils/parse.js';
  *   build a fresh seller-only row (`product` stays null).
  */
 export async function handleSeller(ctx: PlaywrightCrawlingContext, mode: CaptureMode): Promise<void> {
-    const { request, page, log, pushData } = ctx;
+    const { request, page, log } = ctx;
     const url = request.loadedUrl ?? request.url;
 
     const partial = (request.userData as { partialResponse?: ProductSellerResponse } | undefined)?.partialResponse;
@@ -96,7 +98,9 @@ export async function handleSeller(ctx: PlaywrightCrawlingContext, mode: Capture
         product: null,
         sellerRef: { platformSellerId: seller.platformSellerId, name: seller.name, url: seller.url },
         seller,
+        // Placeholder — pushItem() overwrites this with the real audit right before the push.
+        extraction: emptyExtractionReport(),
     };
     response.seller = seller;
-    await pushData(response);
+    await pushItem(ctx, response);
 }
