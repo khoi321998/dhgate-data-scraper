@@ -15,6 +15,12 @@
                 }
             ]
         },
+        "urlsFile": {
+            "title": "URLs file",
+            "type": "string",
+            "description": "Optional file with one URL per line (TXT), a column of URLs (CSV) or a JSON array of URLs / `{ \"url\": ... }` objects. Upload a file or paste a link to one. The URLs are added to Start URLs (duplicates are removed) and follow the same crawl mode.",
+            "editor": "fileupload"
+        },
         "mode": {
             "title": "Crawl mode",
             "type": "string",

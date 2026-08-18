@@ -12,7 +12,7 @@ import { extractDeliveryTimeText } from '../extractors/product/shipping.js';
 import { extractPaymentMethods } from '../extractors/product/paymentMethods.js';
 import { extractSellerInline } from '../extractors/product/seller.js';
 import { emptyProduct, emptySeller } from '../utils/defaults.js';
-import { extractProductId } from '../utils/parse.js';
+import { extractProductId, normalizeDhgateHost } from '../utils/parse.js';
 import { emptyExtractionReport } from '../extraction-audit.js';
 import { pushItem } from '../push.js';
 import { LABELS } from '../labels.js';
@@ -28,6 +28,9 @@ export async function handleProduct(ctx: PlaywrightCrawlingContext, mode: Captur
     const { request, page, log, addRequests } = ctx;
     const url = request.loadedUrl ?? request.url;
     const wantSeller = mode === 'product_and_seller';
+    // Carried from the start URL's subdomain (see main.ts). The seller page must be visited
+    // with the same ship-to country, otherwise one row mixes two regional contexts.
+    const { shipCountry } = request.userData as { shipCountry?: string };
 
     // Read-only extractors can run concurrently. extractMedia hovers the gallery
     // (a DOM side effect), so it must run AFTER the price/title reads to avoid
@@ -156,10 +159,10 @@ export async function handleProduct(ctx: PlaywrightCrawlingContext, mode: Captur
         });
         await addRequests([
             {
-                url: sellerInline.ref.url,
+                url: normalizeDhgateHost(sellerInline.ref.url),
                 label: LABELS.SELLER,
                 uniqueKey: `seller:${id}:${sellerInline.ref.platformSellerId ?? sellerInline.ref.url}`,
-                userData: { partialResponse: response },
+                userData: { partialResponse: response, shipCountry },
             },
         ]);
         return; // the seller handler pushes the combined row
