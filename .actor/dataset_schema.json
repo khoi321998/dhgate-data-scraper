@@ -6,7 +6,7 @@
         "overview": {
             "title": "Overview",
             "transformation": {
-                "fields": ["url", "captureMode", "product.title", "extraction.status"]
+                "fields": ["url", "captureMode", "success", "errorCode", "product.title", "extraction.status"]
             },
             "display": {
                 "component": "table",
@@ -17,6 +17,14 @@
                     },
                     "captureMode": {
                         "label": "Mode",
+                        "format": "text"
+                    },
+                    "success": {
+                        "label": "Success",
+                        "format": "boolean"
+                    },
+                    "errorCode": {
+                        "label": "Error",
                         "format": "text"
                     },
                     "product.title": {

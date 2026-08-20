@@ -16,7 +16,16 @@ export async function pushItem(ctx: PlaywrightCrawlingContext, response: Product
     // Audited last, immediately before the push: auditing mid-pipeline would flag fields a
     // later extractor was still going to fill in.
     response.extraction = auditExtraction(response, ITEM_CHECKS);
-    logExtractionReport(response.extraction, log, response.url);
+
+    if (!response.success) {
+        log.warning(`pushing error row: ${response.errorCode} — ${response.errorMessage}`, { url: response.url });
+    }
+    // A row with no sections left (a not-found product) gates every check off, so the audit
+    // reports a vacuous `ok` that says nothing — the warning above is the real story. A row that
+    // failed only halfway still carries a section worth auditing, so it is reported as usual.
+    if (response.extraction.checkedFields > 0) {
+        logExtractionReport(response.extraction, log, response.url);
+    }
 
     await pushData(response);
 }

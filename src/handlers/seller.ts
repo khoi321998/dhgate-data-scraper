@@ -4,9 +4,9 @@ import { extractSellerProducts } from '../extractors/seller/products.js';
 import { extractSellerHeader } from '../extractors/seller/header.js';
 import { extractSellerAbout } from '../extractors/seller/about.js';
 import { extractSellerFeedback } from '../extractors/seller/feedback.js';
-import { emptySeller } from '../utils/defaults.js';
+import { detectBlocked, detectNotFound } from '../extractors/notFound.js';
+import { emptyResponse, emptySeller } from '../utils/defaults.js';
 import { extractSellerId } from '../utils/parse.js';
-import { emptyExtractionReport } from '../extraction-audit.js';
 import { pushItem } from '../push.js';
 
 /**
@@ -24,6 +24,30 @@ export async function handleSeller(ctx: PlaywrightCrawlingContext, mode: Capture
     const url = request.loadedUrl ?? request.url;
 
     const partial = (request.userData as { partialResponse?: ProductSellerResponse } | undefined)?.partialResponse;
+
+    // Refusals first: DHGate answers a browser with 502 where its CDN answers curl with a clean
+    // 404, so a 5xx says nothing about the store. Throw rather than push — Crawlee retries on a
+    // new session, instead of us recording a healthy-looking row scraped from an error page.
+    const blocked = await detectBlocked(page, ctx.response?.status());
+    if (blocked) throw new Error(`${blocked} for ${url} — retrying with a new session`);
+
+    // Then: is this a store page at all? A mistyped `seller_only` start URL and a closed store
+    // both land somewhere without a store header, where every extractor below waits out its own
+    // timeout and extractSellerAbout/Feedback click store tabs that do not exist — a minute per
+    // URL, ending in a row of nulls that looks like selector rot.
+    const notFound = await detectNotFound(page, { status: ctx.response?.status(), url, kind: 'seller' });
+    if (notFound) {
+        log.warning(`[seller] store page not found — ${notFound}`, { url });
+        // In product_and_seller the product half was already scraped and is carried in `partial`:
+        // keep it and report only the seller as missing, rather than losing a good product to a
+        // dead store link.
+        const failed = partial ?? emptyResponse(url, mode);
+        failed.success = false;
+        failed.errorCode = 'SELLER_NOT_FOUND';
+        failed.errorMessage = notFound;
+        await pushItem(ctx, failed);
+        return;
+    }
 
     // Store-page extractors (more will be added as their DOM is mapped).
     // Read the landing page (top-selling) FIRST, then visit the About Us tab —
@@ -91,15 +115,9 @@ export async function handleSeller(ctx: PlaywrightCrawlingContext, mode: Capture
     if (feedback.reviews.length > 0) seller.sellerReviews = feedback.reviews;
 
     const response: ProductSellerResponse = partial ?? {
-        platform: 'dhgate',
-        url,
-        capturedAt: new Date().toISOString(),
-        captureMode: mode,
-        product: null,
+        ...emptyResponse(url, mode),
         sellerRef: { platformSellerId: seller.platformSellerId, name: seller.name, url: seller.url },
         seller,
-        // Placeholder — pushItem() overwrites this with the real audit right before the push.
-        extraction: emptyExtractionReport(),
     };
     response.seller = seller;
     await pushItem(ctx, response);

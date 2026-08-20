@@ -7,8 +7,10 @@ import { Actor, log } from 'apify';
 
 // this is ESM project, and as such, it requires you to specify extensions in your relative imports
 // note that we need to use `.js` even when inside TS files
-import type { ActorInput } from './dto/index.js';
+import type { ActorInput, ProductSellerResponse } from './dto/index.js';
+import { pushItem } from './push.js';
 import { createRouter, LABELS } from './routes.js';
+import { emptyResponse } from './utils/defaults.js';
 import { DEFAULT_SHIP_COUNTRY, extractDhgateShipCountry, normalizeDhgateHost } from './utils/parse.js';
 
 // Initialize the Apify SDK
@@ -69,9 +71,30 @@ const crawler = new PlaywrightCrawler({
         );
         await sleep(RETRY_DELAY_MILLIS);
     },
+    // Last stop after every retry is spent. Without this the URL would simply vanish from the
+    // output, leaving the caller unable to tell "we never managed to load it" from "we never
+    // tried" — so it gets a row like any other, marked FETCH_FAILED.
+    failedRequestHandler: async (ctx, error) => {
+        const { request } = ctx;
+        const url = request.loadedUrl ?? request.url;
+        // A seller request carries the product already scraped off the PDP: keep it rather than
+        // lose a good product to a store page we could not reach.
+        const { partialResponse } = request.userData as { partialResponse?: ProductSellerResponse };
+        const row = partialResponse ?? emptyResponse(url, mode);
+        row.success = false;
+        row.errorCode = 'FETCH_FAILED';
+        row.errorMessage = `gave up after ${request.retryCount} retries: ${(error as Error).message}`;
+        await pushItem(ctx, row);
+    },
     headless: false,
     preNavigationHooks: [
-        async ({ page, request }) => {
+        async ({ page, request }, gotoOptions) => {
+            // Crawlee waits for `load` by default, which DHGate's error pages never fire: a dead
+            // product/store URL burnt the full 60s navigation timeout, three times over, before
+            // the handler ever got to say "not found". `domcontentloaded` fires on those pages in
+            // about a second, and the extractors all gate on their own selectors anyway — none of
+            // them needs images and trackers to have finished loading.
+            gotoOptions.waitUntil = 'domcontentloaded';
             // Set the locale cookies before the first navigation so the very first render is
             // already English / USD and shipping to the right country. Browser contexts are
             // reused across requests, so this re-writes `b2b_ship_country` every time rather

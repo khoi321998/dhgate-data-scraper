@@ -1,4 +1,4 @@
-import type { Platform, CaptureMode } from './common.js';
+import type { Platform, CaptureMode, ScrapeErrorCode } from './common.js';
 import type { ExtractionReport } from './extraction.js';
 import type { Product } from './product.js';
 import type { SellerRef, Seller } from './seller.js';
@@ -11,6 +11,19 @@ export interface ProductSellerResponse {
     /** ISO-8601 timestamp of when the page was captured. */
     capturedAt: string;
     captureMode: CaptureMode;
+    /**
+     * Whether this row captured everything the capture mode asked for. A failure is still pushed
+     * as a row rather than dropped — the caller asked about this URL and deserves an answer about
+     * it — so `success` is the first thing a consumer should branch on.
+     *
+     * `false` does not always mean empty: a `product_and_seller` row whose store page is gone
+     * keeps the product it did scrape and reports `SELLER_NOT_FOUND`.
+     */
+    success: boolean;
+    /** Machine-readable failure reason, `null` when `success` is `true`. */
+    errorCode: ScrapeErrorCode | null;
+    /** Human-readable detail behind `errorCode`: which signal fired. `null` on success. */
+    errorMessage: string | null;
     /** The scraped product, or `null` in `seller_only` runs (no product page is visited). */
     product: Product | null;
     sellerRef: SellerRef | null;

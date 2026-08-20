@@ -11,9 +11,9 @@ import { extractReviews } from '../extractors/product/reviews.js';
 import { extractDeliveryTimeText } from '../extractors/product/shipping.js';
 import { extractPaymentMethods } from '../extractors/product/paymentMethods.js';
 import { extractSellerInline } from '../extractors/product/seller.js';
-import { emptyProduct, emptySeller } from '../utils/defaults.js';
+import { detectBlocked, detectNotFound } from '../extractors/notFound.js';
+import { emptyProduct, emptyResponse, emptySeller, errorResponse } from '../utils/defaults.js';
 import { extractProductId, normalizeDhgateHost } from '../utils/parse.js';
-import { emptyExtractionReport } from '../extraction-audit.js';
 import { pushItem } from '../push.js';
 import { LABELS } from '../labels.js';
 
@@ -31,6 +31,21 @@ export async function handleProduct(ctx: PlaywrightCrawlingContext, mode: Captur
     // Carried from the start URL's subdomain (see main.ts). The seller page must be visited
     // with the same ship-to country, otherwise one row mixes two regional contexts.
     const { shipCountry } = request.userData as { shipCountry?: string };
+
+    // Refusals first: a 5xx or an anti-bot interstitial says nothing about the listing, so throw
+    // and let Crawlee retry on a new session rather than record an error page as a product.
+    const blocked = await detectBlocked(page, ctx.response?.status());
+    if (blocked) throw new Error(`${blocked} for ${url} — retrying with a new session`);
+
+    // Then the ordinary failure on a marketplace: the listing is simply gone. Checked before the
+    // extractors, every one of which would otherwise wait out its own timeout against a DOM that
+    // will never mount, and leave a row of nulls that reads like selector rot.
+    const notFound = await detectNotFound(page, { status: ctx.response?.status(), url, kind: 'product' });
+    if (notFound) {
+        log.warning(`[product] item not found — ${notFound}`, { url });
+        await pushItem(ctx, errorResponse(url, mode, 'ITEM_NOT_FOUND', notFound));
+        return;
+    }
 
     // Read-only extractors can run concurrently. extractMedia hovers the gallery
     // (a DOM side effect), so it must run AFTER the price/title reads to avoid
@@ -120,17 +135,7 @@ export async function handleProduct(ctx: PlaywrightCrawlingContext, mode: Captur
     product.reviewsSummary.ratingBreakdown = reviews.ratingBreakdown;
     product.reviewsSummary.reviewSamples = reviews.reviewSamples;
 
-    const response: ProductSellerResponse = {
-        platform: 'dhgate',
-        url,
-        capturedAt: new Date().toISOString(),
-        captureMode: mode,
-        product,
-        sellerRef: null,
-        seller: null,
-        // Placeholder — pushItem() overwrites this with the real audit right before the push.
-        extraction: emptyExtractionReport(),
-    };
+    const response: ProductSellerResponse = { ...emptyResponse(url, mode), product };
 
     // In product_and_seller mode, resolve the seller from the PDP's "About the Store"
     // block and seed the seller profile with what's available inline.

@@ -1,6 +1,14 @@
-import type { Product, Pricing, ReviewsSummary } from '../dto/index.js';
-import type { Seller } from '../dto/index.js';
-import type { Technical } from '../dto/index.js';
+import type {
+    CaptureMode,
+    Pricing,
+    Product,
+    ProductSellerResponse,
+    ReviewsSummary,
+    ScrapeErrorCode,
+    Seller,
+    Technical,
+} from '../dto/index.js';
+import { emptyExtractionReport } from '../extraction-audit.js';
 
 export function emptyPricing(): Pricing {
     return {
@@ -48,6 +56,42 @@ export function emptySeller(): Seller {
         productPreviews: [],
         sellerReviews: [],
     };
+}
+
+/**
+ * The response envelope every handler starts from: successful and empty until it says otherwise.
+ *
+ * `extraction` is a placeholder — {@link pushItem} overwrites it with the real audit right
+ * before the row is pushed.
+ */
+export function emptyResponse(url: string, mode: CaptureMode): ProductSellerResponse {
+    return {
+        platform: 'dhgate',
+        url,
+        capturedAt: new Date().toISOString(),
+        captureMode: mode,
+        success: true,
+        errorCode: null,
+        errorMessage: null,
+        product: null,
+        sellerRef: null,
+        seller: null,
+        extraction: emptyExtractionReport(),
+    };
+}
+
+/**
+ * An envelope for a page we could not scrape. `product`/`seller` stay null, which also keeps
+ * the extraction audit quiet: its checks are gated on those sections being present, so a dead
+ * listing is not reported as a broken selector.
+ */
+export function errorResponse(
+    url: string,
+    mode: CaptureMode,
+    errorCode: ScrapeErrorCode,
+    errorMessage: string,
+): ProductSellerResponse {
+    return { ...emptyResponse(url, mode), success: false, errorCode, errorMessage };
 }
 
 /** A fully-defaulted Technical block. Fields are populated as diagnostic scraping is added. */
