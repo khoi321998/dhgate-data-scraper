@@ -14,6 +14,7 @@ import { extractSellerInline } from '../extractors/product/seller.js';
 import { detectBlocked, detectNotFound } from '../extractors/notFound.js';
 import { emptyProduct, emptyResponse, emptySeller, errorResponse } from '../utils/defaults.js';
 import { extractProductId, normalizeDhgateHost } from '../utils/parse.js';
+import { reportedUrl } from '../utils/request.js';
 import { pushItem } from '../push.js';
 import { LABELS } from '../labels.js';
 
@@ -27,6 +28,8 @@ import { LABELS } from '../labels.js';
 export async function handleProduct(ctx: PlaywrightCrawlingContext, mode: CaptureMode): Promise<void> {
     const { request, page, log, addRequests } = ctx;
     const url = request.loadedUrl ?? request.url;
+    // What the row reports: the caller's original URL, not our normalized rewrite of it.
+    const outUrl = reportedUrl(request);
     const wantSeller = mode === 'product_and_seller';
     // Carried from the start URL's subdomain (see main.ts). The seller page must be visited
     // with the same ship-to country, otherwise one row mixes two regional contexts.
@@ -43,7 +46,7 @@ export async function handleProduct(ctx: PlaywrightCrawlingContext, mode: Captur
     const notFound = await detectNotFound(page, { status: ctx.response?.status(), url, kind: 'product' });
     if (notFound) {
         log.warning(`[product] item not found — ${notFound}`, { url });
-        await pushItem(ctx, errorResponse(url, mode, 'ITEM_NOT_FOUND', notFound));
+        await pushItem(ctx, errorResponse(outUrl, mode, 'ITEM_NOT_FOUND', notFound));
         return;
     }
 
@@ -135,7 +138,7 @@ export async function handleProduct(ctx: PlaywrightCrawlingContext, mode: Captur
     product.reviewsSummary.ratingBreakdown = reviews.ratingBreakdown;
     product.reviewsSummary.reviewSamples = reviews.reviewSamples;
 
-    const response: ProductSellerResponse = { ...emptyResponse(url, mode), product };
+    const response: ProductSellerResponse = { ...emptyResponse(outUrl, mode), product };
 
     // In product_and_seller mode, resolve the seller from the PDP's "About the Store"
     // block and seed the seller profile with what's available inline.
@@ -167,7 +170,9 @@ export async function handleProduct(ctx: PlaywrightCrawlingContext, mode: Captur
                 url: normalizeDhgateHost(sellerInline.ref.url),
                 label: LABELS.SELLER,
                 uniqueKey: `seller:${id}:${sellerInline.ref.platformSellerId ?? sellerInline.ref.url}`,
-                userData: { partialResponse: response, shipCountry },
+                // `inputUrl` rides along so the seller handler still reports the caller's URL
+                // if it ever has to build a row of its own.
+                userData: { partialResponse: response, shipCountry, inputUrl: outUrl },
             },
         ]);
         return; // the seller handler pushes the combined row

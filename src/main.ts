@@ -12,6 +12,7 @@ import { pushItem } from './push.js';
 import { createRouter, LABELS } from './routes.js';
 import { emptyResponse } from './utils/defaults.js';
 import { DEFAULT_SHIP_COUNTRY, extractDhgateShipCountry, normalizeDhgateHost } from './utils/parse.js';
+import { reportedUrl } from './utils/request.js';
 
 // Initialize the Apify SDK
 await Actor.init();
@@ -76,7 +77,8 @@ const crawler = new PlaywrightCrawler({
     // tried" — so it gets a row like any other, marked FETCH_FAILED.
     failedRequestHandler: async (ctx, error) => {
         const { request } = ctx;
-        const url = request.loadedUrl ?? request.url;
+        // Report the caller's original URL, not the normalized one we actually navigated to.
+        const url = reportedUrl(request);
         // A seller request carries the product already scraped off the PDP: keep it rather than
         // lose a good product to a store page we could not reach.
         const { partialResponse } = request.userData as { partialResponse?: ProductSellerResponse };

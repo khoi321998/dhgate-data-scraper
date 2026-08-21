@@ -7,6 +7,7 @@ import { extractSellerFeedback } from '../extractors/seller/feedback.js';
 import { detectBlocked, detectNotFound } from '../extractors/notFound.js';
 import { emptyResponse, emptySeller } from '../utils/defaults.js';
 import { extractSellerId } from '../utils/parse.js';
+import { reportedUrl } from '../utils/request.js';
 import { pushItem } from '../push.js';
 
 /**
@@ -22,6 +23,8 @@ import { pushItem } from '../push.js';
 export async function handleSeller(ctx: PlaywrightCrawlingContext, mode: CaptureMode): Promise<void> {
     const { request, page, log } = ctx;
     const url = request.loadedUrl ?? request.url;
+    // What the row reports: the caller's original URL, not our normalized rewrite of it.
+    const outUrl = reportedUrl(request);
 
     const partial = (request.userData as { partialResponse?: ProductSellerResponse } | undefined)?.partialResponse;
 
@@ -41,7 +44,7 @@ export async function handleSeller(ctx: PlaywrightCrawlingContext, mode: Capture
         // In product_and_seller the product half was already scraped and is carried in `partial`:
         // keep it and report only the seller as missing, rather than losing a good product to a
         // dead store link.
-        const failed = partial ?? emptyResponse(url, mode);
+        const failed = partial ?? emptyResponse(outUrl, mode);
         failed.success = false;
         failed.errorCode = 'SELLER_NOT_FOUND';
         failed.errorMessage = notFound;
@@ -115,7 +118,7 @@ export async function handleSeller(ctx: PlaywrightCrawlingContext, mode: Capture
     if (feedback.reviews.length > 0) seller.sellerReviews = feedback.reviews;
 
     const response: ProductSellerResponse = partial ?? {
-        ...emptyResponse(url, mode),
+        ...emptyResponse(outUrl, mode),
         sellerRef: { platformSellerId: seller.platformSellerId, name: seller.name, url: seller.url },
         seller,
     };
