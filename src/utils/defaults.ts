@@ -54,7 +54,9 @@ export function emptySeller(): Seller {
         transactions: null,
         badges: [],
         productPreviews: [],
-        sellerReviews: [],
+        positiveReviewSamples: [],
+        neutralReviewSamples: [],
+        negativeReviewSamples: [],
     };
 }
 

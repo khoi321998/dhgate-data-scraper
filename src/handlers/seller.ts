@@ -87,7 +87,13 @@ export async function handleSeller(ctx: PlaywrightCrawlingContext, mode: Capture
 
     const feedback = await extractSellerFeedback(page);
     log.info('[seller] feedback', {
-        sellerReviews: feedback.reviews.length,
+        // Per-bucket counts: an empty Neutral/Negative next to a healthy Positive is how a
+        // "Reviews:" dropdown that stopped switching shows up.
+        reviewSamples: {
+            positive: feedback.reviews.positive.length,
+            neutral: feedback.reviews.neutral.length,
+            negative: feedback.reviews.negative.length,
+        },
         positiveFeedbackPercent: feedback.positiveFeedbackPercent,
         transactions: feedback.transactions,
         reviewScore: feedback.reviewScore ?? null,
@@ -115,7 +121,11 @@ export async function handleSeller(ctx: PlaywrightCrawlingContext, mode: Capture
     if (about) seller.about = about;
     if (feedback.reviewScore) seller.reviewScore = feedback.reviewScore;
     if (feedback.serviceScore) seller.serviceScore = feedback.serviceScore;
-    if (feedback.reviews.length > 0) seller.sellerReviews = feedback.reviews;
+    // Each bucket is written only when it produced cards, so a filter we could not reach
+    // leaves whatever the PDP already supplied instead of blanking it.
+    if (feedback.reviews.positive.length > 0) seller.positiveReviewSamples = feedback.reviews.positive;
+    if (feedback.reviews.neutral.length > 0) seller.neutralReviewSamples = feedback.reviews.neutral;
+    if (feedback.reviews.negative.length > 0) seller.negativeReviewSamples = feedback.reviews.negative;
 
     const response: ProductSellerResponse = partial ?? {
         ...emptyResponse(outUrl, mode),

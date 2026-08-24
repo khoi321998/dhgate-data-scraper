@@ -234,9 +234,13 @@ export const ITEM_CHECKS: FieldCheck[] = [
     {
         // Gated on the score table having parsed: that proves we reached the Review tab, so an
         // empty card list there is rot rather than a store that has never been reviewed.
-        path: 'seller.sellerReviews',
+        //
+        // Only the Positive bucket is checked. The tab's Dates filter stays on "Last 30 days",
+        // so a healthy store can genuinely have no neutral or negative review in the window —
+        // checking those would fire on good pages and train everyone to ignore the report.
+        path: 'seller.positiveReviewSamples',
         severity: 'warning',
-        selector: '.review-list-pro',
+        selector: '.review-type-option a[data-status="1"] → .review-list-pro',
         when: reachedSellerReviewTab,
     },
 ];

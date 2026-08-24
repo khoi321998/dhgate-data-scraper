@@ -28,8 +28,12 @@ export interface SellerProductPreview {
     reviewCount?: number;
 }
 
+/** Which bucket of the Review tab's "Reviews:" dropdown a sample was collected from. */
+export type SellerReviewType = 'positive' | 'neutral' | 'negative';
+
 /**
  * A single review from the store's "Reviews Received" list on the Review tab.
+ * Which filter it came from is carried by the field it lands in, not by the sample.
  */
 export interface SellerReviewSample {
     /** Reviewer's masked display name, e.g. "Laura****hetta" ("By:" stripped). */
@@ -106,7 +110,13 @@ export interface Seller {
     about?: SellerAbout;
     /** Other products by this seller, scraped from the PDP recommendation strip. */
     productPreviews?: SellerProductPreview[];
-    /** Sample store reviews, collected per star rating. */
-    sellerReviews?: SellerReviewSample[];
+    /**
+     * Store review samples, one field per "Reviews:" filter on the Review tab, up to 5 each.
+     * The tab's Dates filter stays on its default (Last 30 days), so a quiet bucket is
+     * legitimately empty rather than a sign of a broken selector.
+     */
+    positiveReviewSamples?: SellerReviewSample[];
+    neutralReviewSamples?: SellerReviewSample[];
+    negativeReviewSamples?: SellerReviewSample[];
     [key: string]: unknown;
 }
