@@ -1,3 +1,5 @@
+import { Actor } from 'apify';
+
 import type {
     CaptureMode,
     Pricing,
@@ -61,6 +63,15 @@ export function emptySeller(): Seller {
 }
 
 /**
+ * The Apify run this process belongs to, or `null` when running locally — `apify run` has no
+ * run behind it. Read on every call rather than cached at import time so it is never captured
+ * before the SDK has populated the environment.
+ */
+export function currentActorRunId(): string | null {
+    return Actor.getEnv().actorRunId ?? null;
+}
+
+/**
  * The response envelope every handler starts from: successful and empty until it says otherwise.
  *
  * `extraction` is a placeholder — {@link pushItem} overwrites it with the real audit right
@@ -72,6 +83,7 @@ export function emptyResponse(url: string, mode: CaptureMode): ProductSellerResp
         url,
         capturedAt: new Date().toISOString(),
         captureMode: mode,
+        actorRunId: currentActorRunId(),
         success: true,
         errorCode: null,
         errorMessage: null,

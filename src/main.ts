@@ -11,16 +11,16 @@ import type { ActorInput, ProductSellerResponse } from './dto/index.js';
 import { pushItem } from './push.js';
 import { createRouter, LABELS } from './routes.js';
 import { recordChallengeOutcome, settleCloudflareChallenge } from './utils/cloudflare.js';
-import { emptyResponse } from './utils/defaults.js';
+import { currentActorRunId, emptyResponse } from './utils/defaults.js';
 import { DEFAULT_SHIP_COUNTRY, extractDhgateShipCountry, normalizeDhgateHost } from './utils/parse.js';
 import { reportedUrl } from './utils/request.js';
 
 // Initialize the Apify SDK
 await Actor.init();
 
-// Locally there is no run — `actorRunId` is undefined unless the Actor is running on the platform.
-const { actorRunId } = Actor.getEnv();
-log.info(`Actor run ID: ${actorRunId ?? '(none — running locally)'}`);
+// Locally there is no run — `actorRunId` is null unless the Actor is running on the platform.
+// The same value is stamped on every dataset row, see `emptyResponse`.
+log.info(`Actor run ID: ${currentActorRunId() ?? '(none — running locally)'}`);
 
 // Structure of input is defined in .actor/input_schema.json
 const {

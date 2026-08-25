@@ -12,6 +12,12 @@ export interface ProductSellerResponse {
     capturedAt: string;
     captureMode: CaptureMode;
     /**
+     * The Apify run that produced this row, so a dataset item can be traced back to its run (and
+     * its logs) without going through the dataset's own metadata. `null` when running locally,
+     * where there is no run.
+     */
+    actorRunId: string | null;
+    /**
      * Whether this row captured everything the capture mode asked for. A failure is still pushed
      * as a row rather than dropped — the caller asked about this URL and deserves an answer about
      * it — so `success` is the first thing a consumer should branch on.
