@@ -18,6 +18,10 @@ import { reportedUrl } from './utils/request.js';
 // Initialize the Apify SDK
 await Actor.init();
 
+// Locally there is no run — `actorRunId` is undefined unless the Actor is running on the platform.
+const { actorRunId } = Actor.getEnv();
+log.info(`Actor run ID: ${actorRunId ?? '(none — running locally)'}`);
+
 // Structure of input is defined in .actor/input_schema.json
 const {
     startUrls = [],
