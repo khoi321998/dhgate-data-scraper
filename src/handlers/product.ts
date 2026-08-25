@@ -12,6 +12,7 @@ import { extractDeliveryTimeText } from '../extractors/product/shipping.js';
 import { extractPaymentMethods } from '../extractors/product/paymentMethods.js';
 import { extractSellerInline } from '../extractors/product/seller.js';
 import { detectBlocked, detectNotFound } from '../extractors/notFound.js';
+import { effectiveStatus } from '../utils/cloudflare.js';
 import { emptyProduct, emptyResponse, emptySeller, errorResponse } from '../utils/defaults.js';
 import { extractProductId, normalizeDhgateHost } from '../utils/parse.js';
 import { reportedUrl } from '../utils/request.js';
@@ -35,15 +36,20 @@ export async function handleProduct(ctx: PlaywrightCrawlingContext, mode: Captur
     // with the same ship-to country, otherwise one row mixes two regional contexts.
     const { shipCountry } = request.userData as { shipCountry?: string };
 
+    // The status that describes the DOM we are about to read — which is not `ctx.response`'s when
+    // a Cloudflare challenge stood in front of it and then handed us the real page. See
+    // utils/cloudflare.ts.
+    const status = effectiveStatus(request, ctx.response?.status());
+
     // Refusals first: a 5xx or an anti-bot interstitial says nothing about the listing, so throw
     // and let Crawlee retry on a new session rather than record an error page as a product.
-    const blocked = await detectBlocked(page, ctx.response?.status());
+    const blocked = await detectBlocked(page, status);
     if (blocked) throw new Error(`${blocked} for ${url} — retrying with a new session`);
 
     // Then the ordinary failure on a marketplace: the listing is simply gone. Checked before the
     // extractors, every one of which would otherwise wait out its own timeout against a DOM that
     // will never mount, and leave a row of nulls that reads like selector rot.
-    const notFound = await detectNotFound(page, { status: ctx.response?.status(), url, kind: 'product' });
+    const notFound = await detectNotFound(page, { status, url, kind: 'product' });
     if (notFound) {
         log.warning(`[product] item not found — ${notFound}`, { url });
         await pushItem(ctx, errorResponse(outUrl, mode, 'ITEM_NOT_FOUND', notFound));

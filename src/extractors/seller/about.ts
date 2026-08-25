@@ -1,5 +1,6 @@
 import type { Page } from 'playwright';
 import type { SellerAbout } from '../../dto/index.js';
+import { settleCloudflareChallenge } from '../../utils/cloudflare.js';
 import { stripUrlParams } from '../../utils/parse.js';
 
 /** Map a "Basic Information" row label (lower-cased, colon-stripped) to a SellerAbout key. */
@@ -45,6 +46,9 @@ export async function extractSellerAbout(page: Page): Promise<SellerAbout | null
     // delays DOMContentLoaded. Resolve as soon as navigation commits and gate on the
     // #BasicContent heading attaching instead — it parses long before those scripts.
     await page.goto(aboutUrl, { waitUntil: 'commit' }).catch(() => {});
+    // This navigation is ours, not Crawlee's, so main.ts's post-navigation hook never sees it:
+    // a Cloudflare interstitial on the About tab would otherwise be read as an empty About block.
+    await settleCloudflareChallenge(page);
     const basicBlock = page.locator('#BasicContent + .aboutcon').first();
     await page
         .locator('#BasicContent')

@@ -10,6 +10,7 @@ import { Actor, log } from 'apify';
 import type { ActorInput, ProductSellerResponse } from './dto/index.js';
 import { pushItem } from './push.js';
 import { createRouter, LABELS } from './routes.js';
+import { recordChallengeOutcome, settleCloudflareChallenge } from './utils/cloudflare.js';
 import { emptyResponse } from './utils/defaults.js';
 import { DEFAULT_SHIP_COUNTRY, extractDhgateShipCountry, normalizeDhgateHost } from './utils/parse.js';
 import { reportedUrl } from './utils/request.js';
@@ -60,8 +61,17 @@ const localeCookies = (shipCountry: string) => [
 const RETRY_DELAY_MILLIS = 5_000;
 
 const crawler = new PlaywrightCrawler({
-    // No proxy for now — running against DHGate directly.
+    // No proxy for now — running against DHGate directly. Measured, not assumed: the same IP that
+    // gets challenged in the browser answers HTTP 200 to curl with a plain Chrome User-Agent, and
+    // to a real Google Chrome. What DHGate refuses is the automated browser's fingerprint, so
+    // rotating IPs would buy nothing here — see utils/cloudflare.ts.
     maxRequestsPerCrawl,
+    // Crawlee treats 403 as "blocked" and throws in its own response handler, before any of our
+    // code — including the challenge wait below — gets a say. But on DHGate every first hit is a
+    // 403: that is what the Cloudflare interstitial is served with, and it clears itself seconds
+    // later. So 403 is taken off this list and judged after the wait instead, by `detectBlocked`
+    // in the handlers, which by then knows whether the challenge actually passed.
+    sessionPoolOptions: { blockedStatusCodes: [401, 429] },
     requestHandler: createRouter(mode),
     // Runs between a failed attempt and the next one (not after the last retry —
     // that is `failedRequestHandler`), so awaiting here delays only the retry.
@@ -88,6 +98,9 @@ const crawler = new PlaywrightCrawler({
         row.errorMessage = `gave up after ${request.retryCount} retries: ${(error as Error).message}`;
         await pushItem(ctx, row);
     },
+    // Headed, and not negotiable: Playwright's bundled Chromium in headless mode never clears
+    // DHGate's Cloudflare challenge — verified against a live product URL, it sat on the
+    // interstitial for the full 30s. Headed, the same browser clears it in about five seconds.
     headless: false,
     preNavigationHooks: [
         async ({ page, request }, gotoOptions) => {
@@ -103,6 +116,38 @@ const crawler = new PlaywrightCrawler({
             // than letting the previous request's country leak into this one.
             const { shipCountry = DEFAULT_SHIP_COUNTRY } = request.userData as { shipCountry?: string };
             await page.context().addCookies(localeCookies(shipCountry));
+        },
+    ],
+    postNavigationHooks: [
+        // DHGate started serving a Cloudflare "Just a moment…" interstitial (HTTP 403) in front of
+        // its pages. It clears itself once the browser has run Cloudflare's JS — but only if we
+        // wait: the handlers' `detectBlocked` sees the 403 and throws instantly, burning all three
+        // retries on a challenge that was about to pass. Wait it out here, before any handler runs.
+        // See utils/cloudflare.ts for why this is a fingerprint problem, not an IP ban.
+        async ({ page, request, session }) => {
+            const { outcome, type, elapsedMillis, budgetMillis } = await settleCloudflareChallenge(page);
+            recordChallengeOutcome(request, outcome);
+
+            if (outcome === 'passed') {
+                // Logged with its timing on purpose: this is the only way to find out what the
+                // challenge actually costs on Apify's shared CPU, which is where the budgets in
+                // utils/cloudflare.ts are guesses. An `elapsedMillis` creeping towards
+                // `budgetMillis` in production is the signal to raise DHGATE_CHALLENGE_TIMEOUT_MS.
+                log.info(
+                    `Cleared Cloudflare challenge (${type ?? 'unknown'}) in ${elapsedMillis}ms ` +
+                        `of ${budgetMillis}ms for ${request.url}`,
+                );
+            } else if (outcome === 'stuck') {
+                // Either it never cleared, or it was the interactive "Verify you are human"
+                // checkbox, which no amount of waiting solves. Retire the session so the retry
+                // comes back with a fresh browser fingerprint and cookie jar — in practice that
+                // second attempt is waved straight through.
+                log.warning(
+                    `Cloudflare challenge (${type ?? 'unknown'}) did not clear in ${budgetMillis}ms ` +
+                        `for ${request.url} — retiring session`,
+                );
+                session?.retire();
+            }
         },
     ],
     launchContext: {

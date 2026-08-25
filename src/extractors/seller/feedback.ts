@@ -6,6 +6,7 @@ import type {
     SellerServiceScore,
     SellerServiceScoreItem,
 } from '../../dto/index.js';
+import { settleCloudflareChallenge } from '../../utils/cloudflare.js';
 import { stripUrlParams, parseCompactNumber, parseAmount } from '../../utils/parse.js';
 
 /** Cap on how many seller reviews we keep per review type. */
@@ -68,6 +69,9 @@ export async function extractSellerFeedback(page: Page): Promise<SellerFeedback>
     // page's trailing inline scripts delay DOMContentLoaded. The per-section reads below
     // (waitFor on .review-score, etc.) gate on the actual data instead.
     await page.goto(reviewUrl, { waitUntil: 'commit' }).catch(() => {});
+    // Our own navigation, so main.ts's post-navigation hook never runs for it: without this a
+    // Cloudflare interstitial on the Review tab reads as a store with no feedback at all.
+    await settleCloudflareChallenge(page);
 
     // Read the page-level blocks first: sampling the reviews re-submits the page's filter
     // form, so everything else must come off the copy we already have.

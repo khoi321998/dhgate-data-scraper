@@ -5,6 +5,7 @@ import { extractSellerHeader } from '../extractors/seller/header.js';
 import { extractSellerAbout } from '../extractors/seller/about.js';
 import { extractSellerFeedback } from '../extractors/seller/feedback.js';
 import { detectBlocked, detectNotFound } from '../extractors/notFound.js';
+import { effectiveStatus } from '../utils/cloudflare.js';
 import { emptyResponse, emptySeller } from '../utils/defaults.js';
 import { extractSellerId } from '../utils/parse.js';
 import { reportedUrl } from '../utils/request.js';
@@ -28,17 +29,22 @@ export async function handleSeller(ctx: PlaywrightCrawlingContext, mode: Capture
 
     const partial = (request.userData as { partialResponse?: ProductSellerResponse } | undefined)?.partialResponse;
 
+    // The status that describes the DOM we are about to read — which is not `ctx.response`'s when
+    // a Cloudflare challenge stood in front of it and then handed us the real page. See
+    // utils/cloudflare.ts.
+    const status = effectiveStatus(request, ctx.response?.status());
+
     // Refusals first: DHGate answers a browser with 502 where its CDN answers curl with a clean
     // 404, so a 5xx says nothing about the store. Throw rather than push — Crawlee retries on a
     // new session, instead of us recording a healthy-looking row scraped from an error page.
-    const blocked = await detectBlocked(page, ctx.response?.status());
+    const blocked = await detectBlocked(page, status);
     if (blocked) throw new Error(`${blocked} for ${url} — retrying with a new session`);
 
     // Then: is this a store page at all? A mistyped `seller_only` start URL and a closed store
     // both land somewhere without a store header, where every extractor below waits out its own
     // timeout and extractSellerAbout/Feedback click store tabs that do not exist — a minute per
     // URL, ending in a row of nulls that looks like selector rot.
-    const notFound = await detectNotFound(page, { status: ctx.response?.status(), url, kind: 'seller' });
+    const notFound = await detectNotFound(page, { status, url, kind: 'seller' });
     if (notFound) {
         log.warning(`[seller] store page not found — ${notFound}`, { url });
         // In product_and_seller the product half was already scraped and is carried in `partial`:

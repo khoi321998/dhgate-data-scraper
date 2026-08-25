@@ -1,5 +1,7 @@
 import type { Page } from 'playwright';
 
+import { CHALLENGE_TITLE } from '../utils/cloudflare.js';
+
 /**
  * Is this the page we asked for, or a dead end?
  *
@@ -40,9 +42,13 @@ const GONE_STATUSES = new Set([404, 410]);
 const BLOCKED_STATUSES = new Set([401, 403, 429]);
 
 /**
- * Detect a refusal: anti-bot (401/403/429, or DHGate's "Access Denied" interstitial) and 5xx,
- * which DHGate serves to a browser for URLs its CDN answers with a clean 404 — so a 5xx here is
- * not evidence of anything about the item.
+ * Detect a refusal: anti-bot (401/403/429, DHGate's "Access Denied" page, or a Cloudflare
+ * challenge that never cleared) and 5xx, which DHGate serves to a browser for URLs its CDN answers
+ * with a clean 404 — so a 5xx here is not evidence of anything about the item.
+ *
+ * Pass the status through `effectiveStatus` first. Cloudflare's interstitial *is* a 403, and the
+ * real page it hands us afterwards arrives on a navigation Crawlee never records — so the raw
+ * `ctx.response` status would condemn a perfectly good product page.
  *
  * Returns the reason, for the caller to throw with; `null` when the response looks usable.
  */
@@ -52,6 +58,8 @@ export async function detectBlocked(page: Page, status?: number): Promise<string
     }
     const title = await page.title().catch(() => '');
     if (/access denied/i.test(title)) return 'DHGate served its "Access Denied" page';
+    // The post-navigation hook already waited this out; still being here means it never cleared.
+    if (CHALLENGE_TITLE.test(title)) return 'Cloudflare is still holding us on its challenge page';
     return null;
 }
 
