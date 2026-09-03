@@ -98,13 +98,12 @@ const localeCookies = (shipCountry: string) => [
 const RETRY_DELAY_MILLIS = 5_000;
 
 const crawler = new PlaywrightCrawler({
-    // Proxy is configurable and defaults to Apify DATACENTER/US. Note what it does and does not
+    // Proxy is configurable and defaults to Apify RESIDENTIAL/US. Note what it does and does not
     // fix: the earlier measurement still holds — the same IP that gets challenged in an automated
     // browser answers 200 to curl and to a real Chrome, so the challenge is a *fingerprint*
-    // trigger, not an IP ban, and a proxy alone will not make it disappear. What the proxy buys is
-    // a fresh IP per retired session; residential would buy a gentler Cloudflare threat score on
-    // top of that, at a price that this fingerprint-driven challenge does not repay. See
-    // utils/proxy.ts and utils/cloudflare.ts.
+    // trigger, not an IP ban, and a proxy alone will not make it disappear. What a residential US
+    // exit buys is a gentler Cloudflare threat score (fewer interactive "Verify you are human"
+    // variants) and a fresh IP per retired session. See utils/cloudflare.ts.
     proxyConfiguration,
     maxRequestsPerCrawl,
     // Crawlee treats 403 as "blocked" and throws in its own response handler, before any of our

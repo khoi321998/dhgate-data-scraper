@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { DEFAULT_PROXY, describeProxy, pickProxy } from '../src/utils/proxy.js';
 
 describe('pickProxy', () => {
-    // Every shape that means "the run did not choose". All of them must land on the datacenter
+    // Every shape that means "the run did not choose". All of them must land on the residential
     // default rather than quietly going out on the container's own IP — that is the whole point.
     it.each([
         ['missing', undefined],
@@ -11,11 +11,11 @@ describe('pickProxy', () => {
         ['empty object (Console proxy editor, untouched)', {}],
         ['empty proxyUrls', { proxyUrls: [] }],
         ['empty groups', { apifyProxyGroups: [] }],
-    ])('defaults to datacenter US when proxyConfiguration is %s', (_label, input) => {
+    ])('defaults to residential US when proxyConfiguration is %s', (_label, input) => {
         const { settings, chosen } = pickProxy(input);
         expect(chosen).toBe(false);
         expect(settings).toBe(DEFAULT_PROXY);
-        expect(settings.apifyProxyGroups).toEqual(['DATACENTER']);
+        expect(settings.apifyProxyGroups).toEqual(['RESIDENTIAL']);
     });
 
     it('honours an explicit opt-out', () => {
@@ -41,14 +41,12 @@ describe('pickProxy', () => {
 
 describe('describeProxy', () => {
     it('flags the substituted default so the log says where it came from', () => {
-        expect(describeProxy(pickProxy(undefined))).toBe('DATACENTER US (default — nothing set in input)');
+        expect(describeProxy(pickProxy(undefined))).toBe('RESIDENTIAL US (default — nothing set in input)');
     });
 
-    // Deliberately a different group from the default, so a passing assertion cannot be the default
-    // leaking through: only the input could have produced this line.
     it('describes an explicit configuration without the default marker', () => {
-        expect(describeProxy(pickProxy({ useApifyProxy: true, apifyProxyGroups: ['RESIDENTIAL'] }))).toBe(
-            'RESIDENTIAL (no country)',
+        expect(describeProxy(pickProxy({ useApifyProxy: true, apifyProxyGroups: ['DATACENTER'] }))).toBe(
+            'DATACENTER (no country)',
         );
     });
 
