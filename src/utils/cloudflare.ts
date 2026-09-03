@@ -202,32 +202,64 @@ export async function settleCloudflareChallenge(page: Page): Promise<ChallengeRe
 /**
  * Where the "Verify you are human" checkbox actually is.
  *
- * Crawlee's helper aims at `.main-content div` and offsets a fixed `+30, +25` from its top-left.
- * That is a guess about layout, and on DHGate it lands around (223, 158) — top-left of a 1920x1080
- * screen, nowhere near a centred widget. So aim at the thing itself instead: the checkbox lives in
- * an iframe Cloudflare serves from `challenges.cloudflare.com`, and while its *contents* are
- * cross-origin and unreadable, the iframe *element* sits in our document and measures fine.
+ * Crawlee's helper aims at `.main-content div` with a fixed `+30, +25` offset, and on DHGate's
+ * interstitial that is simply the wrong element. The page reads:
  *
- * Inside that frame Turnstile puts the checkbox on the left, vertically centred — hence `+30` across
- * and half the height down. Returning `undefined` leaves Crawlee's own guess in place, which is the
- * right fallback: on a page with no widget there is nothing better to aim at anyway.
+ * ```html
+ * <div class="main-content">
+ *   <div class="lpdkQ3"><img …><h1>www.dhgate.com</h1></div>   ← first div: the site header
+ *   <h2>Performing security verification</h2>
+ *   <div id="lVJB5"><div><div>
+ *     <div></div>                                              ← the widget
+ *     <input type="hidden" name="cf-turnstile-response">
+ * ```
+ *
+ * `.main-content div` matches the header, so the clicks landed at (222, 153) — on the heading text,
+ * about 185px above a checkbox sitting at (213, 337). Ten clicks into empty space, which is exactly
+ * what the platform run showed.
+ *
+ * Looking for the widget's `<iframe>` does not help either: Turnstile mounts it inside a **closed
+ * shadow root** on that empty `<div>`, so `querySelectorAll('iframe')` returns nothing and
+ * `page.content()` serializes nothing — which is why the saved HTML has no iframe in it at all
+ * while the screenshot plainly shows the widget.
+ *
+ * What *is* reachable is the hidden input Turnstile writes its token into. `cf-turnstile-response`
+ * is Cloudflare's own API contract — the name a site reads the token back from — so unlike the
+ * hashed `lpdkQ3` class names around it, it is stable. Measure from there.
+ *
+ * Returning `undefined` leaves Crawlee's guess in place, which is the honest fallback: on a page
+ * with no widget there is nothing better to aim at.
  */
 async function turnstileClickPosition(page: Page): Promise<{ x: number; y: number } | undefined> {
     const box = await page
         .evaluate(() => {
-            const frame = [...document.querySelectorAll('iframe')].find(
-                (f) =>
-                    /challenges\.cloudflare\.com|\/cdn-cgi\/challenge-platform\//.test(f.src) ||
-                    /cloudflare security challenge/i.test(f.title),
+            // Zero-sized means mounted but not laid out — or one of the `display: none` stages the
+            // challenge page keeps in reserve. Aiming at either would miss.
+            const measure = (el: Element | null | undefined) => {
+                const r = el?.getBoundingClientRect();
+                return r && r.width > 0 && r.height > 0 ? { x: r.x, y: r.y, height: r.height } : null;
+            };
+
+            const token = document.querySelector('input[name="cf-turnstile-response"]');
+            if (token) {
+                // The widget is the sibling <div> the shadow root hangs off; its parent is the
+                // fallback, since it wraps the widget and the hidden input and little else.
+                const host = token.parentElement?.querySelector(':scope > div');
+                const found = measure(host) ?? measure(token.parentElement);
+                if (found) return found;
+            }
+
+            // Layouts that embed Turnstile the ordinary way leave a visible iframe to measure.
+            const frame = [...document.querySelectorAll('iframe')].find((f) =>
+                /challenges\.cloudflare\.com|\/cdn-cgi\/challenge-platform\//.test(f.src),
             );
-            if (!frame) return null;
-            const r = frame.getBoundingClientRect();
-            // A zero-sized frame is mounted but not laid out yet — aiming at it would miss.
-            return r.width > 0 && r.height > 0 ? { x: r.x, y: r.y, height: r.height } : null;
+            return measure(frame);
         })
         .catch(() => null);
 
-    return box ? { x: box.x + 30, y: box.y + box.height / 2 } : undefined;
+    // Turnstile draws the checkbox at the left of the widget, vertically centred: ~22px in from the
+    // left edge, half the height down. Measured off the saved screenshot, not guessed.
+    return box ? { x: box.x + 22, y: box.y + box.height / 2 } : undefined;
 }
 
 /** A number in `[min, max)`, for the small human variations below. */
@@ -272,10 +304,9 @@ async function clickLikeAHuman(page: Page, x: number, y: number): Promise<void> 
  * What the challenge page is actually made of, read straight from its DOM.
  *
  * Worth its own function because the log alone cannot tell two very different failures apart: a
- * widget we aimed at and missed, and a page with no widget on it at all. The iframe list settles
- * that — Cloudflare's checkbox always lives in an iframe from `challenges.cloudflare.com`, and its
- * box is where a click would have to land. `anchor` is the node Crawlee's helper actually aims
- * from, so the two boxes side by side say whether the click went anywhere near.
+ * widget we aimed at and missed, and a page with no widget on it at all. `widget` and `crawleeAnchor`
+ * side by side say which — the first platform run had them 185px apart, which is how the bad click
+ * position was found. `hasToken` distinguishes "no widget here" from "widget we failed to measure".
  */
 async function describeChallengePage(page: Page) {
     return page
@@ -285,39 +316,99 @@ async function describeChallengePage(page: Page) {
                 const r = el.getBoundingClientRect();
                 return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) };
             };
+            const token = document.querySelector('input[name="cf-turnstile-response"]');
             return {
                 title: document.title,
-                // Cloudflare's own widget frames, with the box a click would have to hit.
-                frames: [...document.querySelectorAll('iframe')]
-                    .filter((f) => /cloudflare|turnstile|challenge/i.test(f.src))
-                    .map((f) => ({ src: f.src.slice(0, 100), box: box(f) })),
-                // The node Crawlee's `handleCloudflareChallenge` measures its click from.
-                anchor: box(document.querySelector('.main-content div')),
+                // Whether Turnstile is on the page at all, even when its box cannot be measured.
+                hasToken: token != null,
+                // The widget itself — the shadow host the checkbox is rendered inside.
+                widget: box(token?.parentElement?.querySelector(':scope > div')) ?? box(token?.parentElement),
+                // What Crawlee's `handleCloudflareChallenge` would aim at if left to itself.
+                crawleeAnchor: box(document.querySelector('.main-content div')),
                 text: document.body?.innerText?.replace(/\s+/g, ' ').trim().slice(0, 240) ?? '',
             };
         })
         .catch(() => null);
 }
 
+/** A point the crawler aimed a click at, kept so the screenshot can show where it went. */
+export interface ClickPoint {
+    x: number;
+    y: number;
+}
+
 /**
- * Put the challenge page itself in the key-value store — a PNG and the HTML behind it.
+ * Paint a marker over every point we clicked, so the screenshot answers "did it hit?" by itself.
  *
- * The log can say a click was fired and still not say why nothing happened. A screenshot answers
- * that in one look, and on the platform it is the only way to see a page that lives for four
- * seconds inside a container. Capped by {@link MAX_SNAPSHOTS} because this fires on failure, and
- * failures come in batches.
+ * Reading coordinates out of a log and imagining them on a screenshot is how the 185px miss went
+ * unnoticed for two platform runs. A crosshair on the image does not need imagining.
+ *
+ * This mutates the page, which is only acceptable because it runs after the challenge has already
+ * failed and the session is on its way to being retired. The marker is labelled so nobody mistakes
+ * it for part of Cloudflare's page.
  */
+async function markClickPoints(page: Page, points: ClickPoint[]): Promise<void> {
+    if (points.length === 0) return;
+    await page
+        .evaluate((pts) => {
+            const layer = document.createElement('div');
+            layer.style.cssText = 'position:fixed;inset:0;z-index:2147483647;pointer-events:none';
+            pts.forEach((p, i) => {
+                const dot = document.createElement('div');
+                dot.style.cssText =
+                    `position:absolute;left:${p.x - 11}px;top:${p.y - 11}px;width:22px;height:22px;` +
+                    'border:2px solid #ff0000;border-radius:50%;box-shadow:0 0 0 1px #fff';
+                const tag = document.createElement('div');
+                tag.textContent = `click ${i + 1} (${Math.round(p.x)},${Math.round(p.y)})`;
+                tag.style.cssText =
+                    `position:absolute;left:${p.x + 14}px;top:${p.y - 8}px;color:#ff0000;` +
+                    'font:11px monospace;background:#fff;padding:1px 3px';
+                layer.append(dot, tag);
+            });
+            document.body.appendChild(layer);
+        }, points)
+        .catch(() => undefined);
+}
+
 /** Counts against {@link MAX_SNAPSHOTS}. Module state on purpose: the cap is per run, not per request. */
 let snapshotsTaken = 0;
 
-async function snapshotChallenge(page: Page, request: Request): Promise<string | null> {
+/**
+ * Put the challenge page in the key-value store: a PNG, the HTML, and the measurements.
+ *
+ * All three, because none is sufficient alone. The screenshot shows the widget but not where we
+ * aimed — hence {@link markClickPoints}. The HTML shows the structure but **not the widget**:
+ * Turnstile lives in a closed shadow root, which `page.content()` does not serialize, so the saved
+ * markup has no `<iframe>` in it at all. That gap is exactly what hid the bug, so the measurements
+ * go in as their own JSON record rather than being left to be reconstructed from the other two.
+ */
+async function snapshotChallenge(
+    page: Page,
+    request: Request,
+    details: unknown,
+    clicks: ClickPoint[],
+): Promise<string | null> {
     if (snapshotsTaken >= MAX_SNAPSHOTS) return null;
     snapshotsTaken++;
 
     const key = `challenge-${request.id ?? 'unknown'}-${request.retryCount}`;
     try {
-        await Actor.setValue(key, await page.screenshot(), { contentType: 'image/png' });
+        await Actor.setValue(`${key}-meta`, {
+            url: request.url,
+            loadedUrl: page.url(),
+            retryCount: request.retryCount,
+            at: new Date().toISOString(),
+            clicks,
+            // Where a correct click would have to land, next to where we actually sent one.
+            details,
+            note:
+                'The HTML record omits the Turnstile widget: it renders inside a closed shadow root, ' +
+                'which page.content() cannot serialize. Use the PNG for what was on screen.',
+        });
         await Actor.setValue(`${key}-html`, await page.content(), { contentType: 'text/html; charset=utf-8' });
+        // Last, because it draws on the page.
+        await markClickPoints(page, clicks);
+        await Actor.setValue(key, await page.screenshot(), { contentType: 'image/png' });
         return key;
     } catch (error) {
         // Diagnostics must never be the thing that fails a run.
@@ -327,17 +418,23 @@ async function snapshotChallenge(page: Page, request: Request): Promise<string |
 }
 
 /**
- * Everything we know about a challenge we could not get past, in one log line plus a screenshot.
+ * Everything we know about a challenge we could not get past: one log line, plus a screenshot with
+ * the click points drawn on it, the raw HTML, and the measurements as JSON.
  *
- * The title and URL tell a challenge loop apart from a hard block page; the frame boxes tell a
- * missed click apart from a page that never had a checkbox. Between them they decide whether the
- * next move is "fix the click position" or "this browser is being fingerprinted, change the
- * browser" — which are very different amounts of work.
+ * The title and URL tell a challenge loop apart from a hard block page; `widget` next to
+ * `crawleeAnchor` and the click markers tell a missed click apart from a page that never had a
+ * checkbox. Between them they decide whether the next move is "fix the click position" or "this
+ * browser is being fingerprinted, change the browser" — very different amounts of work.
  */
-async function reportStuckChallenge(page: Page, request: Request, what: string): Promise<void> {
+async function reportStuckChallenge(
+    page: Page,
+    request: Request,
+    what: string,
+    clicks: ClickPoint[] = [],
+): Promise<void> {
     const details = await describeChallengePage(page);
-    const key = await snapshotChallenge(page, request);
-    const saved = key ? ` — saved as "${key}" in the key-value store` : '';
+    const key = await snapshotChallenge(page, request, details, clicks);
+    const saved = key ? ` — saved as "${key}", "${key}-html" and "${key}-meta" in the key-value store` : '';
     log.warning(`Cloudflare: ${what} for ${request.url} at ${page.url()}${saved}`, details ?? undefined);
 }
 
@@ -384,10 +481,10 @@ export async function passCloudflare(ctx: PlaywrightCrawlingContext): Promise<vo
     );
     // Providing `clickCallback` takes the clicking away from the helper entirely — see
     // `clickLikeAHuman` for why its own is the thing that was failing. Crawlee only logs the click
-    // it performs itself, so with ours in place the counter below is the sole record that a click
-    // happened at all, which is exactly the "did it actually click?" question the logs could not
-    // answer before.
-    let clicks = 0;
+    // it performs itself, so with ours in place this list is the sole record that a click happened
+    // at all, which is exactly the "did it actually click, and where?" question the logs could not
+    // answer before. It is also what gets drawn on the failure screenshot.
+    const clickPoints: ClickPoint[] = [];
     try {
         await handleCloudflareChallenge({
             verbose: true,
@@ -402,8 +499,11 @@ export async function passCloudflare(ctx: PlaywrightCrawlingContext): Promise<vo
             // fallback we want when no widget is on the page to measure.
             clickPositionCallback: turnstileClickPosition as (page: Page) => Promise<{ x: number; y: number }>,
             clickCallback: async (clickPage, { x, y }) => {
-                clicks++;
-                log.info(`Clicking the Cloudflare checkbox (try ${clicks}) at ${Math.round(x)},${Math.round(y)}`);
+                clickPoints.push({ x, y });
+                log.info(
+                    `Clicking the Cloudflare checkbox (try ${clickPoints.length}) at ` +
+                        `${Math.round(x)},${Math.round(y)}`,
+                );
                 await clickLikeAHuman(clickPage, x, y);
             },
             // `clickLikeAHuman` already spends ~3-4s letting Turnstile verify, so the helper's own
@@ -417,7 +517,8 @@ export async function passCloudflare(ctx: PlaywrightCrawlingContext): Promise<vo
         await reportStuckChallenge(
             page,
             request,
-            `${clicks} click(s) did not clear the (${waited.type ?? 'unknown'}) challenge`,
+            `${clickPoints.length} click(s) did not clear the (${waited.type ?? 'unknown'}) challenge`,
+            clickPoints,
         );
         recordChallengeOutcome(request, 'stuck');
         throw error;
@@ -427,14 +528,15 @@ export async function passCloudflare(ctx: PlaywrightCrawlingContext): Promise<vo
     // so confirm rather than assume.
     const clicked = await settleCloudflareChallenge(page);
     if (clicked.outcome === 'stuck') {
-        // `clicks === 0` here is its own diagnosis: the helper never found a widget to aim at, so
-        // nothing was ever clicked and the coordinates are not what needs fixing.
+        // An empty `clickPoints` here is its own diagnosis: the helper never found a widget to aim
+        // at, so nothing was ever clicked and the coordinates are not what needs fixing.
         await reportStuckChallenge(
             page,
             request,
-            clicks === 0
+            clickPoints.length === 0
                 ? `no widget to click — the (${clicked.type ?? 'unknown'}) challenge is still up, retiring session`
-                : `the (${clicked.type ?? 'unknown'}) challenge outlived ${clicks} click(s), retiring session`,
+                : `the (${clicked.type ?? 'unknown'}) challenge outlived ${clickPoints.length} click(s), retiring`,
+            clickPoints,
         );
         recordChallengeOutcome(request, 'stuck');
         session?.retire();
@@ -446,7 +548,8 @@ export async function passCloudflare(ctx: PlaywrightCrawlingContext): Promise<vo
     // not to the document now on screen, and `effectiveStatus` has to know to ignore it.
     recordChallengeOutcome(request, 'passed');
     log.info(
-        `Cleared Cloudflare challenge (${waited.type ?? 'unknown'}) after ${clicks} click(s) for ${request.url}`,
+        `Cleared Cloudflare challenge (${waited.type ?? 'unknown'}) after ${clickPoints.length} click(s) ` +
+            `for ${request.url}`,
     );
 }
 
