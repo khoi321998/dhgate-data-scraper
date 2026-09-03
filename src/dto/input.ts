@@ -20,8 +20,9 @@ export interface ActorInput {
     maxRequestsPerCrawl: number;
     mode: CaptureMode;
     /**
-     * Proxy to route the browser through. Omitting it does *not* mean "no proxy" — `main.ts`
-     * falls back to an Apify residential US exit. `useApifyProxy: false` is how you opt out.
+     * Whether to proxy at all. Defaults to `true`, which means the Apify residential US exit fixed
+     * in `utils/proxy.ts`; `false` goes out on the container's own IP. The exit itself is not
+     * configurable — see that file for why.
      */
-    proxyConfiguration?: ProxyInput;
+    enableProxy?: boolean;
 }

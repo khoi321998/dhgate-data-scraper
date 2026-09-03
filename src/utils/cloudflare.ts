@@ -83,28 +83,17 @@ const MANAGED_TIMEOUT_MILLIS = millisFromEnv('DHGATE_MANAGED_CHALLENGE_TIMEOUT_M
 const MAX_SNAPSHOTS = Math.max(0, Number(process.env.DHGATE_MAX_CHALLENGE_SNAPSHOTS ?? 5) || 0);
 
 /**
- * Cap for the *before the click* screenshots, counted separately from {@link MAX_SNAPSHOTS}.
- *
- * Separate on purpose: these two answer different questions, and sharing one budget would let a run
- * spend it all on pre-click frames and leave the actual failure — the thing that says why we gave
- * up — unrecorded.
- */
-const MAX_PRECLICK_SNAPSHOTS = Math.max(
-    0,
-    Number(process.env.DHGATE_MAX_PRECLICK_SNAPSHOTS ?? MAX_SNAPSHOTS) || 0,
-);
-
-/**
  * How many times we are willing to actually click the checkbox before accepting the answer is no.
  *
  * Crawlee's helper loops a hard-coded ten times, which at the human pace of {@link clickLikeAHuman}
- * is about 55 seconds — and four attempts of that overran the Actor's 300s timeout, killing the run
- * before it could report anything. Three is not a compromise forced by the clock either: if a
- * correctly-aimed click is going to be accepted, it is accepted early, and a fourth identical click
- * at the same coordinates tests nothing the first three did not. The remaining loop iterations still
- * run — they are what notices the challenge clearing — they just stop clicking.
+ * is about 55 seconds — and ten attempts of that overran the Actor's 300s timeout, killing the run
+ * before it could report anything. Five is the middle ground: each extra click is jittered
+ * differently and lands on a freshly measured widget, so it is not quite the same test twice, but
+ * the cost is real — roughly five seconds per click, on every one of the request's attempts. The
+ * remaining loop iterations still run — they are what notices the challenge clearing — they just
+ * stop clicking.
  */
-const MAX_CLICKS = Math.max(1, Number(process.env.DHGATE_MAX_CHALLENGE_CLICKS ?? 3) || 3);
+const MAX_CLICKS = Math.max(1, Number(process.env.DHGATE_MAX_CHALLENGE_CLICKS ?? 5) || 5);
 
 /** How often to re-check whether the interstitial is gone. */
 const POLL_INTERVAL_MILLIS = 500;
@@ -360,103 +349,24 @@ async function describeChallengePage(page: Page) {
         .catch(() => null);
 }
 
-/** A point the crawler aimed a click at, kept so the screenshot can show where it went. */
+/** A point the crawler aimed a click at, so the logs and the saved measurements can say where. */
 export interface ClickPoint {
     x: number;
     y: number;
 }
 
-/**
- * Paint a marker over every point we clicked, so the screenshot answers "did it hit?" by itself.
- *
- * Reading coordinates out of a log and imagining them on a screenshot is how the 185px miss went
- * unnoticed for two platform runs. A crosshair on the image does not need imagining.
- *
- * This mutates the page, which is only acceptable because it runs after the challenge has already
- * failed and the session is on its way to being retired. The marker is labelled so nobody mistakes
- * it for part of Cloudflare's page.
- */
-async function markClickPoints(page: Page, points: ClickPoint[]): Promise<void> {
-    if (points.length === 0) return;
-    await page
-        .evaluate((pts) => {
-            const layer = document.createElement('div');
-            layer.style.cssText = 'position:fixed;inset:0;z-index:2147483647;pointer-events:none';
-            pts.forEach((p, i) => {
-                const dot = document.createElement('div');
-                dot.style.cssText =
-                    `position:absolute;left:${p.x - 11}px;top:${p.y - 11}px;width:22px;height:22px;` +
-                    'border:2px solid #ff0000;border-radius:50%;box-shadow:0 0 0 1px #fff';
-                const tag = document.createElement('div');
-                tag.textContent = `click ${i + 1} (${Math.round(p.x)},${Math.round(p.y)})`;
-                tag.style.cssText =
-                    `position:absolute;left:${p.x + 14}px;top:${p.y - 8}px;color:#ff0000;` +
-                    'font:11px monospace;background:#fff;padding:1px 3px';
-                layer.append(dot, tag);
-            });
-            document.body.appendChild(layer);
-        }, points)
-        .catch(() => undefined);
-}
-
 /** Counts against {@link MAX_SNAPSHOTS}. Module state on purpose: the cap is per run, not per request. */
 let snapshotsTaken = 0;
 
-/** Same, for {@link MAX_PRECLICK_SNAPSHOTS}. */
-let preclickSnapshotsTaken = 0;
-
 /**
- * The challenge page as it looks the instant *before* we click the checkbox.
+ * Put the challenge page in the key-value store: the HTML and the measurements.
  *
- * The failure snapshot only ever shows the aftermath — a widget that has already refused, or a page
- * that has moved on — which cannot answer whether the checkbox was even rendered where we aimed at
- * the moment we aimed. This one can: put it side by side with the failure PNG and the difference is
- * what the click did.
- *
- * Nothing is drawn on the page here, unlike {@link snapshotChallenge}: this runs *before* the click,
- * on a page Turnstile is actively grading, so the DOM is left exactly as Cloudflare rendered it. The
- * target coordinates go into the accompanying JSON instead of onto the pixels.
- */
-async function snapshotBeforeClick(
-    page: Page,
-    request: Request,
-    attempt: number,
-    point: ClickPoint,
-): Promise<void> {
-    if (preclickSnapshotsTaken >= MAX_PRECLICK_SNAPSHOTS) return;
-    preclickSnapshotsTaken++;
-
-    const key = `challenge-${request.id ?? 'unknown'}-${request.retryCount}-preclick-${attempt}`;
-    try {
-        // Taken first: the screenshot is the record, and the measurements around it are worth
-        // nothing if the frame itself was missed.
-        await Actor.setValue(key, await page.screenshot(), { contentType: 'image/png' });
-        await Actor.setValue(`${key}-meta`, {
-            url: request.url,
-            loadedUrl: page.url(),
-            retryCount: request.retryCount,
-            at: new Date().toISOString(),
-            attempt,
-            // Where this click is about to go, next to what the page looked like when we measured it.
-            target: point,
-            details: await describeChallengePage(page),
-        });
-        log.info(`  saved the pre-click screenshot as "${key}" (png), "${key}-meta"`);
-    } catch (error) {
-        // Diagnostics must never be the thing that fails a run — and least of all here, where
-        // throwing would cost us the click itself.
-        log.warning(`Could not snapshot the page before clicking: ${(error as Error).message}`);
-    }
-}
-
-/**
- * Put the challenge page in the key-value store: a PNG, the HTML, and the measurements.
- *
- * All three, because none is sufficient alone. The screenshot shows the widget but not where we
- * aimed — hence {@link markClickPoints}. The HTML shows the structure but **not the widget**:
- * Turnstile lives in a closed shadow root, which `page.content()` does not serialize, so the saved
- * markup has no `<iframe>` in it at all. That gap is exactly what hid the bug, so the measurements
- * go in as their own JSON record rather than being left to be reconstructed from the other two.
+ * No screenshot is taken — not here and not around the clicks. What is left has to carry the
+ * diagnosis on its own, and mostly can: the HTML shows the structure but **not the widget**
+ * (Turnstile lives in a closed shadow root, which `page.content()` does not serialize, so the saved
+ * markup has no `<iframe>` in it at all), which is why the measurements from
+ * {@link describeChallengePage} go in as their own JSON record — `widget` next to `crawleeAnchor`
+ * and the click points is what a picture of the page would otherwise have had to show.
  */
 async function snapshotChallenge(
     page: Page,
@@ -479,12 +389,9 @@ async function snapshotChallenge(
             details,
             note:
                 'The HTML record omits the Turnstile widget: it renders inside a closed shadow root, ' +
-                'which page.content() cannot serialize. Use the PNG for what was on screen.',
+                'which page.content() cannot serialize. Read `details.widget` for where it was.',
         });
         await Actor.setValue(`${key}-html`, await page.content(), { contentType: 'text/html; charset=utf-8' });
-        // Last, because it draws on the page.
-        await markClickPoints(page, clicks);
-        await Actor.setValue(key, await page.screenshot(), { contentType: 'image/png' });
         return key;
     } catch (error) {
         // Diagnostics must never be the thing that fails a run.
@@ -494,11 +401,11 @@ async function snapshotChallenge(
 }
 
 /**
- * Everything we know about a challenge we could not get past: one log line, plus a screenshot with
- * the click points drawn on it, the raw HTML, and the measurements as JSON.
+ * Everything we know about a challenge we could not get past: one log line, plus the raw HTML and
+ * the measurements as JSON.
  *
  * The title and URL tell a challenge loop apart from a hard block page; `widget` next to
- * `crawleeAnchor` and the click markers tell a missed click apart from a page that never had a
+ * `crawleeAnchor` and the click points tell a missed click apart from a page that never had a
  * checkbox. Between them they decide whether the next move is "fix the click position" or "this
  * browser is being fingerprinted, change the browser" — very different amounts of work.
  */
@@ -532,7 +439,7 @@ async function reportStuckChallenge(
     log.warning(`  at ${page.url()}`);
     log.warning(`  ${summary}`);
     log.warning(`  on screen: ${details?.text?.slice(0, 160) ?? '(unreadable)'}`);
-    if (key) log.warning(`  saved: "${key}" (png), "${key}-html", "${key}-meta"`);
+    if (key) log.warning(`  saved: "${key}-html", "${key}-meta"`);
 }
 
 /**
@@ -609,10 +516,8 @@ export async function passCloudflare(ctx: PlaywrightCrawlingContext): Promise<vo
                     `Clicking the Cloudflare checkbox (try ${clickPoints.length}/${MAX_CLICKS}) at ` +
                         `${Math.round(x)},${Math.round(y)}`,
                 );
-                // Before the click, not after: this is the only chance to see the widget in the
-                // state we are aiming at. `clickPage` rather than the outer `page` — the helper
-                // hands in the page it is actually driving.
-                await snapshotBeforeClick(clickPage, request, clickPoints.length, { x, y });
+                // `clickPage` rather than the outer `page` — the helper hands in the page it is
+                // actually driving.
                 await clickLikeAHuman(clickPage, x, y);
             },
             // `clickLikeAHuman` already spends ~3-4s letting Turnstile verify, so the helper's own

@@ -36,12 +36,11 @@
             "description": "Maximum number of requests that can be made by this crawler.",
             "default": 100
         },
-        "proxyConfiguration": {
-            "title": "Proxy configuration",
-            "type": "object",
-            "description": "Proxy the browser goes through. Leave this alone unless you have a reason not to: DHGate is behind Cloudflare, so runs default to an Apify residential US exit, which gets challenged less often and gives each retried session a fresh IP. Datacenter proxies and no-proxy both still work, they just hit the 'Verify you are human' variant far more.",
-            "editor": "proxy",
-            "default": { "useApifyProxy": true, "apifyProxyGroups": ["RESIDENTIAL"], "apifyProxyCountry": "US" }
+        "enableProxy": {
+            "title": "Use a proxy",
+            "type": "boolean",
+            "description": "Whether to route the browser through a proxy. When on, the run uses an Apify residential US exit (fixed in code: DHGate is behind Cloudflare, and that exit gets challenged least while giving each retried session a fresh IP). When off, the run goes out on the container's own IP — expect far more 'Verify you are human' challenges.",
+            "default": true
         }
     }
 }

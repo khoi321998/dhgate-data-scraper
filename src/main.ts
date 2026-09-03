@@ -32,20 +32,22 @@ const {
     startUrls = [],
     maxRequestsPerCrawl = 100,
     mode = 'product_only',
-    proxyConfiguration: proxyInput,
+    enableProxy = true,
 } = (await Actor.getInput<ActorInput>()) ?? ({} as ActorInput);
 
-// Runs default to a proxy rather than to a direct connection — see utils/proxy.ts for why that is
-// not a preference on a Cloudflare-fronted site, and for what counts as opting out.
-const proxyChoice = pickProxy(proxyInput);
+// The exit itself is fixed in code (Apify residential US) — see utils/proxy.ts for why that is not
+// a preference on a Cloudflare-fronted site. The input only decides whether to use it at all.
+const proxyChoice = pickProxy(enableProxy);
 
-// `undefined` back from here means no proxy will be used — either because the input said so, or
-// because Apify Proxy was asked for and could not be reached. Those two are very different, and
-// only one of them is a problem, so they are logged differently.
-const proxyConfiguration = await Actor.createProxyConfiguration(proxyChoice.settings);
+// With the switch off we do not even ask the SDK. With it on, `undefined` back from here is a
+// problem rather than a choice — Apify Proxy was asked for and could not be reached — so the two
+// are logged differently.
+const proxyConfiguration = proxyChoice.enabled ? await Actor.createProxyConfiguration(proxyChoice.settings) : undefined;
 if (proxyConfiguration) {
     log.info(`Proxy: ${describeProxy(proxyChoice)}`);
-} else if (proxyChoice.settings.useApifyProxy !== false) {
+} else if (!proxyChoice.enabled) {
+    log.info('Proxy: none — disabled by `enableProxy: false`; hitting DHGate from this container’s own IP');
+} else {
     // Locally this is the usual cause: `npm run start:dev` runs the script directly and never sees
     // `~/.apify/auth.json`, so the SDK finds no token, warns, and carries on without a proxy. Use
     // `apify run` (or set APIFY_TOKEN) to actually get one. On the platform the SDK throws instead.
@@ -53,8 +55,6 @@ if (proxyConfiguration) {
         'Proxy: none — Apify Proxy was requested but no token or password is available, so DHGate ' +
             'is being hit from this machine’s own IP. Expect many more Cloudflare challenges.',
     );
-} else {
-    log.info('Proxy: none — turned off in the input; hitting DHGate from this container’s own IP');
 }
 
 // Which browser binary we drive is the biggest single factor in how often Cloudflare challenges us,
