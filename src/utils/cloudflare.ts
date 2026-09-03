@@ -1,7 +1,7 @@
 import { setTimeout as sleep } from 'node:timers/promises';
 
 import type { PlaywrightCrawlingContext, Request } from '@crawlee/playwright';
-import { log } from 'apify';
+import { Actor, log } from 'apify';
 import type { Page } from 'playwright';
 
 /**
@@ -66,6 +66,22 @@ const CHALLENGE_TIMEOUT_MILLIS = millisFromEnv('DHGATE_CHALLENGE_TIMEOUT_MS', 60
  */
 const INTERACTIVE_TIMEOUT_MILLIS = millisFromEnv('DHGATE_INTERACTIVE_CHALLENGE_TIMEOUT_MS', 6_000);
 
+/**
+ * Budget for `managed` — Cloudflare's modern default, where it decides at run time whether to let
+ * the browser through, show a spinner, or render a widget.
+ *
+ * Measured on Apify, not guessed: a managed challenge that is going to reject us does not clear
+ * slowly, it never clears. The first platform run sat on one for the full 60s of
+ * {@link CHALLENGE_TIMEOUT_MILLIS} and then still needed the checkbox — 60 wasted seconds on every
+ * one of the request's four attempts. Since a managed challenge that *accepts* the browser clears in
+ * seconds, a long budget buys nothing here and costs minutes, so this one is short and gets to the
+ * click quickly.
+ */
+const MANAGED_TIMEOUT_MILLIS = millisFromEnv('DHGATE_MANAGED_CHALLENGE_TIMEOUT_MS', 15_000);
+
+/** How many challenge snapshots one run may write, so a bad run cannot fill the key-value store. */
+const MAX_SNAPSHOTS = Math.max(0, Number(process.env.DHGATE_MAX_CHALLENGE_SNAPSHOTS ?? 5) || 0);
+
 /** How often to re-check whether the interstitial is gone. */
 const POLL_INTERVAL_MILLIS = 500;
 
@@ -126,7 +142,9 @@ export interface ChallengeResult {
  * every second here delays that click.
  */
 function budgetFor(type: string | null): number {
-    return type === 'interactive' ? INTERACTIVE_TIMEOUT_MILLIS : CHALLENGE_TIMEOUT_MILLIS;
+    if (type === 'interactive') return INTERACTIVE_TIMEOUT_MILLIS;
+    if (type === 'managed') return MANAGED_TIMEOUT_MILLIS;
+    return CHALLENGE_TIMEOUT_MILLIS;
 }
 
 /**
@@ -182,6 +200,79 @@ export async function settleCloudflareChallenge(page: Page): Promise<ChallengeRe
 }
 
 /**
+ * What the challenge page is actually made of, read straight from its DOM.
+ *
+ * Worth its own function because the log alone cannot tell two very different failures apart: a
+ * widget we aimed at and missed, and a page with no widget on it at all. The iframe list settles
+ * that — Cloudflare's checkbox always lives in an iframe from `challenges.cloudflare.com`, and its
+ * box is where a click would have to land. `anchor` is the node Crawlee's helper actually aims
+ * from, so the two boxes side by side say whether the click went anywhere near.
+ */
+async function describeChallengePage(page: Page) {
+    return page
+        .evaluate(() => {
+            const box = (el: Element | null | undefined) => {
+                if (!el) return null;
+                const r = el.getBoundingClientRect();
+                return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) };
+            };
+            return {
+                title: document.title,
+                // Cloudflare's own widget frames, with the box a click would have to hit.
+                frames: [...document.querySelectorAll('iframe')]
+                    .filter((f) => /cloudflare|turnstile|challenge/i.test(f.src))
+                    .map((f) => ({ src: f.src.slice(0, 100), box: box(f) })),
+                // The node Crawlee's `handleCloudflareChallenge` measures its click from.
+                anchor: box(document.querySelector('.main-content div')),
+                text: document.body?.innerText?.replace(/\s+/g, ' ').trim().slice(0, 240) ?? '',
+            };
+        })
+        .catch(() => null);
+}
+
+/**
+ * Put the challenge page itself in the key-value store — a PNG and the HTML behind it.
+ *
+ * The log can say a click was fired and still not say why nothing happened. A screenshot answers
+ * that in one look, and on the platform it is the only way to see a page that lives for four
+ * seconds inside a container. Capped by {@link MAX_SNAPSHOTS} because this fires on failure, and
+ * failures come in batches.
+ */
+/** Counts against {@link MAX_SNAPSHOTS}. Module state on purpose: the cap is per run, not per request. */
+let snapshotsTaken = 0;
+
+async function snapshotChallenge(page: Page, request: Request): Promise<string | null> {
+    if (snapshotsTaken >= MAX_SNAPSHOTS) return null;
+    snapshotsTaken++;
+
+    const key = `challenge-${request.id ?? 'unknown'}-${request.retryCount}`;
+    try {
+        await Actor.setValue(key, await page.screenshot(), { contentType: 'image/png' });
+        await Actor.setValue(`${key}-html`, await page.content(), { contentType: 'text/html; charset=utf-8' });
+        return key;
+    } catch (error) {
+        // Diagnostics must never be the thing that fails a run.
+        log.warning(`Could not snapshot the Cloudflare challenge: ${(error as Error).message}`);
+        return null;
+    }
+}
+
+/**
+ * Everything we know about a challenge we could not get past, in one log line plus a screenshot.
+ *
+ * The title and URL tell a challenge loop apart from a hard block page; the frame boxes tell a
+ * missed click apart from a page that never had a checkbox. Between them they decide whether the
+ * next move is "fix the click position" or "this browser is being fingerprinted, change the
+ * browser" — which are very different amounts of work.
+ */
+async function reportStuckChallenge(page: Page, request: Request, what: string): Promise<void> {
+    const details = await describeChallengePage(page);
+    const key = await snapshotChallenge(page, request);
+    const saved = key ? ` — saved as "${key}" in the key-value store` : '';
+    log.warning(`Cloudflare: ${what} for ${request.url} at ${page.url()}${saved}`, details ?? undefined);
+}
+
+/**
  * The whole Cloudflare gate, as one post-navigation step.
  *
  * Waiting clears the non-interactive variant. What it never clears is the one with the "Verify you
@@ -225,19 +316,25 @@ export async function passCloudflare(ctx: PlaywrightCrawlingContext): Promise<vo
     // Crawlee's own challenge detector keys off one specific footer node (`.ray-id`); ours reads
     // the title and Cloudflare's `_cf_chl_opt`, which also survives localized interstitials. Hand
     // ours in so the helper and the re-check below agree on what "still challenged" means.
-    await handleCloudflareChallenge({ verbose: true, isChallengeCallback: isChallengePage });
+    try {
+        await handleCloudflareChallenge({ verbose: true, isChallengeCallback: isChallengePage });
+    } catch (error) {
+        // The helper throws `SessionError` once its clicks are spent. That is the right outcome and
+        // it goes on to the caller untouched — but it is also the last moment the challenge page
+        // still exists, so the evidence has to be collected here or not at all.
+        await reportStuckChallenge(page, request, `clicks did not clear the (${waited.type ?? 'unknown'}) challenge`);
+        recordChallengeOutcome(request, 'stuck');
+        throw error;
+    }
 
     // The helper returns quietly — no click, no error — when it cannot find the element it aims at,
     // so confirm rather than assume.
     const clicked = await settleCloudflareChallenge(page);
     if (clicked.outcome === 'stuck') {
-        // The title and the URL we are stuck on are the two things that tell a "challenge loop"
-        // (same interstitial, over and over) apart from a hard block page, which is the difference
-        // between "rotate IP" and "this fingerprint is burnt".
-        const stuckTitle = await page.title().catch(() => '(unreadable)');
-        log.warning(
-            `Cloudflare challenge (${clicked.type ?? 'unknown'}) survived the checkbox for ` +
-                `${request.url} — retiring session. On screen: "${stuckTitle}" at ${page.url()}`,
+        await reportStuckChallenge(
+            page,
+            request,
+            `the (${clicked.type ?? 'unknown'}) challenge outlived the checkbox, retiring session`,
         );
         recordChallengeOutcome(request, 'stuck');
         session?.retire();
