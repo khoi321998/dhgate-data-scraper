@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node -e ' *)",
+      "Bash(node \"C:/Users/khoit/AppData/Local/Temp/claude/d--ApifyScript-DhGatePlatform-dhgate-data-scraper/4ebf15e2-9612-4f90-9a47-4149d04fe41e/scratchpad/verify-position.mjs\")",
+      "Bash(node ./verify-position.tmp.mjs)",
+      "Bash(apify validate-schema *)"
+    ]
+  }
+}

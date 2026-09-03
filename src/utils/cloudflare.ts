@@ -331,6 +331,11 @@ async function describeChallengePage(page: Page) {
             const token = document.querySelector('input[name="cf-turnstile-response"]');
             return {
                 title: document.title,
+                // Turnstile declines to verify a page it believes nobody is looking at. Under Xvfb
+                // there is no real display, and a page Crawlee opened alongside others can sit in a
+                // background tab, so both of these are worth seeing next to a failed click.
+                visibility: document.visibilityState,
+                focused: document.hasFocus(),
                 // Whether Turnstile is on the page at all, even when its box cannot be measured.
                 hasToken: token != null,
                 // The widget itself — the shadow host the checkbox is rendered inside.
@@ -454,6 +459,8 @@ async function reportStuckChallenge(
     const summary = details
         ? [
               `title="${details.title}"`,
+              `visibility=${details.visibility}`,
+              `focused=${details.focused}`,
               `turnstilePresent=${details.hasToken}`,
               `widget=[${geometry(details.widget)}]`,
               `crawleeAnchor=[${geometry(details.crawleeAnchor)}]`,
@@ -510,6 +517,10 @@ export async function passCloudflare(ctx: PlaywrightCrawlingContext): Promise<vo
         `Cloudflare challenge (${waited.type ?? 'unknown'}) still up after ${waited.elapsedMillis}ms ` +
             `for ${request.url} — going for the checkbox`,
     );
+    // Turnstile will not verify a page it thinks is in the background, and Crawlee opens pages
+    // side by side in one browser — the loser of that race reports `visibilityState: 'hidden'`.
+    // Cheap insurance before aiming a click; harmless when the page was in front already.
+    await page.bringToFront().catch(() => undefined);
     // Providing `clickCallback` takes the clicking away from the helper entirely — see
     // `clickLikeAHuman` for why its own is the thing that was failing. Crawlee only logs the click
     // it performs itself, so with ours in place this list is the sole record that a click happened

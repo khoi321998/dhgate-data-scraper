@@ -4,6 +4,9 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { PlaywrightCrawler } from '@crawlee/playwright';
 // For more information, see https://docs.apify.com/sdk/js
 import { Actor, log } from 'apify';
+// Drop-in Playwright fork with the automation leaks patched out — see `launcher` below.
+import { chromium as patchrightChromium } from 'patchright';
+import type { BrowserType } from 'playwright';
 
 // this is ESM project, and as such, it requires you to specify extensions in your relative imports
 // note that we need to use `.js` even when inside TS files
@@ -162,26 +165,55 @@ const crawler = new PlaywrightCrawler({
         // about to pass. See utils/cloudflare.ts for the two ways past it.
         passCloudflare,
     ],
-    // Crawlee injects a generated fingerprint (usually a Windows Chrome UA and matching JS shims)
-    // by default. That helps a bundled Chromium and actively hurts a real one: the spoofed
-    // navigator says Windows while the platform APIs, fonts and GPU strings underneath say Linux,
-    // and *that mismatch* is precisely what Cloudflare grades. A real Chrome's own consistent
-    // fingerprint beats a fabricated one, so when we have Chrome, we let it speak for itself.
-    browserPoolOptions: { useFingerprints: !chrome.useChrome },
+    browserPoolOptions: {
+        // Crawlee injects a generated fingerprint (usually a Windows Chrome UA and matching JS
+        // shims) by default. That helps a bundled Chromium and actively hurts a real one: the
+        // spoofed navigator says Windows while the platform APIs, fonts and GPU strings underneath
+        // say Linux, and *that mismatch* is precisely what Cloudflare grades. It is also injected
+        // with `addInitScript`, which is one of the things Patchright exists to keep off the page.
+        // A real Chrome's own consistent fingerprint beats a fabricated one.
+        useFingerprints: !chrome.useChrome,
+        prePageCreateHooks: [
+            (_pageId, _controller, pageOptions) => {
+                // Playwright's default 1280x720 viewport is applied through the CDP call
+                // `Emulation.setDeviceMetricsOverride`, and a page whose metrics are overridden does
+                // not look like a window someone opened. `null` means "whatever the real window is",
+                // which is what Patchright's own recommended configuration asks for. Click positions
+                // are measured off the live DOM, so nothing downstream depends on a fixed size.
+                // BrowserPool's hook contract is to mutate the options object it hands in; there is
+                // no return value it would read, so the reassignment is the API, not a slip.
+                // eslint-disable-next-line no-param-reassign
+                if (pageOptions) pageOptions.viewport = null;
+            },
+        ],
+    },
     launchContext: {
-        // The real Google Chrome, not Playwright's bundled Chromium — the single biggest lever on
-        // how often we get challenged at all. `executablePath` is the one utils/browser.ts actually
+        // Patchright is a drop-in Playwright fork that closes the leaks vanilla Playwright opens in
+        // the browser it drives — chiefly the `Runtime.Enable` CDP call, which Cloudflare and
+        // DataDome both watch for. Everything measurable had already been ruled out on the platform
+        // (real Chrome, residential IP, a click landing 1px off the checkbox centre, healthy CPU)
+        // and the challenge still refused, which leaves how the browser is driven rather than what
+        // it is. Crawlee only needs a launcher with Playwright's shape, so this is a one-line swap.
+        // The cast bridges a *type* gap, not a behavioural one: `patchright-core` tracks Playwright
+        // 1.62 while this project is pinned to 1.60 to match the Docker base image, so its `Locator`
+        // declares methods (`waitForFunction`) that 1.60's does not, and the two structural types
+        // refuse to unify. The runtime API Crawlee actually calls — `launch`, `name`, `connect` —
+        // is identical, which is the whole premise of a drop-in fork. Upgrading Playwright instead
+        // would break `check-playwright-version.mjs` against the 1.60 base image.
+        launcher: patchrightChromium as unknown as BrowserType,
+        // The real Google Chrome, not a bundled Chromium — Patchright's documented configuration
+        // asks for the branded build too. `executablePath` is the one utils/browser.ts actually
         // probed for, so Crawlee does not have to guess a second time.
         useChrome: chrome.useChrome,
         launchOptions: {
             executablePath: chrome.executablePath,
             args: [
                 '--disable-gpu', // Mitigates the "crashing GPU process" issue in Docker containers
-                // Playwright does not set this itself (only its MCP layer does). Without it Blink
-                // leaves the automation flag on, which `navigator.webdriver` reports and every bot
-                // check reads first.
-                '--disable-blink-features=AutomationControlled',
             ],
+            // Deliberately absent: `--disable-blink-features=AutomationControlled`. Patchright
+            // handles `navigator.webdriver` at a lower level, and the flag is itself a deviation
+            // from how a real Chrome is started — which is one of the things Patchright patches out
+            // of the command line. Adding it back would undo part of what it is here to do.
         },
     },
 });
