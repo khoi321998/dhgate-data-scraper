@@ -1,14 +1,15 @@
 import { setTimeout as sleep } from 'node:timers/promises';
 
-import type { Request } from '@crawlee/playwright';
+import type { PlaywrightCrawlingContext, Request } from '@crawlee/playwright';
+import { log } from 'apify';
 import type { Page } from 'playwright';
 
 /**
- * DHGate now sits behind a Cloudflare *non-interactive* challenge ("Just a moment…").
+ * DHGate sits behind a Cloudflare challenge ("Just a moment…"), in two flavours.
  *
  * It is not an IP ban: the same IP answers 200 to curl with a plain Chrome User-Agent, and to a
- * real Google Chrome. What trips it is the browser fingerprint — Playwright's bundled Chromium
- * gets challenged, and then has to prove itself by running Cloudflare's JS for a few seconds.
+ * real Google Chrome. What trips it is the browser fingerprint — an automated browser gets
+ * challenged, and then has to prove itself by running Cloudflare's JS for a few seconds.
  *
  * Two consequences for the crawler:
  *
@@ -19,11 +20,18 @@ import type { Page } from 'playwright';
  *    that second navigation, so `ctx.response` keeps reporting the challenge's 403 for a document
  *    that is, by then, the product page.
  *
- * So: wait the challenge out ({@link settleCloudflareChallenge}), and stop trusting the recorded
- * status once we have ({@link effectiveStatus}).
+ * So {@link passCloudflare} runs the whole gate as one post-navigation step, in three moves:
  *
- * Headless is not an option here — the bundled Chromium in headless mode never clears the
- * challenge, no matter how long it is given. That is why `main.ts` runs headed.
+ * - wait the non-interactive variant out ({@link settleCloudflareChallenge}),
+ * - if waiting is not enough, tick the "Verify you are human" checkbox (Crawlee's
+ *   `handleCloudflareChallenge`, which clicks it with a real mouse event — the widget lives in a
+ *   cross-origin iframe, so a click at the right coordinates is the only way in),
+ * - and stop trusting the recorded status once we are through ({@link effectiveStatus}).
+ *
+ * Two things outside this file do most of the work of *not* being challenged in the first place:
+ * `main.ts` launches the real Google Chrome rather than the bundled Chromium (see utils/browser.ts
+ * for why that matters more than anything in here), and it runs headed — headless never cleared the
+ * challenge in testing, no matter how long it was given.
  */
 
 /**
@@ -51,13 +59,12 @@ const CHALLENGE_TIMEOUT_MILLIS = millisFromEnv('DHGATE_CHALLENGE_TIMEOUT_MS', 60
 /**
  * Budget for the *interactive* variant — the one with a "Verify you are human" checkbox.
  *
- * Deliberately much shorter, because this is not a solve budget: nothing we do will ever tick that
- * box. The working answer for an interactive challenge is to retire the session and come back with
- * a different fingerprint, and every second spent here delays that. It is not zero only because
- * Cloudflare does sometimes auto-solve the interactive widget on its own — so it gets a grace
- * period sized to a slow container, and no more.
+ * Deliberately much shorter, because waiting is not what solves this one: clicking is. This is only
+ * the grace period we give Cloudflare to auto-solve its own widget (which it does, sometimes)
+ * before {@link passCloudflare} stops waiting and goes for the checkbox. Every second spent here is
+ * a second that click is delayed, so it is sized to "a slow container might just be slow", no more.
  */
-const INTERACTIVE_TIMEOUT_MILLIS = millisFromEnv('DHGATE_INTERACTIVE_CHALLENGE_TIMEOUT_MS', 12_000);
+const INTERACTIVE_TIMEOUT_MILLIS = millisFromEnv('DHGATE_INTERACTIVE_CHALLENGE_TIMEOUT_MS', 6_000);
 
 /** How often to re-check whether the interstitial is gone. */
 const POLL_INTERVAL_MILLIS = 500;
@@ -113,6 +120,16 @@ export interface ChallengeResult {
 }
 
 /**
+ * How long a challenge of this flavour is worth waiting on. Waiting is the *only* move against the
+ * non-interactive variant — there is no checkbox on that page for {@link passCloudflare} to click —
+ * so it gets the long budget. The interactive one gets barely any, because clicking solves it and
+ * every second here delays that click.
+ */
+function budgetFor(type: string | null): number {
+    return type === 'interactive' ? INTERACTIVE_TIMEOUT_MILLIS : CHALLENGE_TIMEOUT_MILLIS;
+}
+
+/**
  * Sit on the Cloudflare interstitial until it clears itself.
  *
  * Polls rather than using `waitForFunction`, because clearing the challenge is a real navigation:
@@ -124,24 +141,114 @@ export async function settleCloudflareChallenge(page: Page): Promise<ChallengeRe
         return { outcome: 'none', type: null, elapsedMillis: 0, budgetMillis: 0 };
     }
 
-    // An interactive challenge is not something waiting solves, so it gets a much shorter budget:
-    // the sooner we return 'stuck', the sooner the caller retires the session and retries — which
-    // is what actually gets us in.
-    const type = await readChallengeType(page);
-    const budgetMillis = type === 'interactive' ? INTERACTIVE_TIMEOUT_MILLIS : CHALLENGE_TIMEOUT_MILLIS;
+    let type = await readChallengeType(page);
+    let budgetMillis = budgetFor(type);
 
     const startedAt = Date.now();
-    const deadline = startedAt + budgetMillis;
-    while (Date.now() < deadline) {
+    // The budget is re-read every iteration rather than frozen into a deadline, because the branch
+    // below can shrink it partway through.
+    while (Date.now() - startedAt < budgetMillis) {
+        await sleep(POLL_INTERVAL_MILLIS);
+
+        if (await isChallengePage(page)) {
+            // Cloudflare can escalate a non-interactive challenge into the checkbox one while we
+            // are sitting on it. Nothing about waiting solves that second one, so re-read the type
+            // and cut the budget the moment it flips — otherwise a request that needs one click
+            // burns the full non-interactive minute first.
+            const current = await readChallengeType(page);
+            if (current && current !== type) {
+                log.info(
+                    `Cloudflare escalated the challenge: ${type ?? 'unknown'} -> ${current}, cutting the wait short`,
+                );
+                type = current;
+                budgetMillis = budgetFor(current);
+            }
+            continue;
+        }
+
+        // Not a challenge *right now* — but that is not the same as being through. Two ways this
+        // reading lies, both seen against DHGate: the check can land in the gap between documents
+        // (the `evaluate` rejects, which we read as "no challenge"), and Cloudflare can hand the
+        // challenge straight to *another* challenge. So let the next document parse, then look
+        // again; only a page that is still clean after settling counts as passed, and anything
+        // else drops back into the loop with the remaining budget.
+        await page.waitForLoadState('domcontentloaded').catch(() => undefined);
         await sleep(POLL_INTERVAL_MILLIS);
         if (!(await isChallengePage(page))) {
-            // Cloudflare has navigated us to the real page; let that document parse before the
-            // extractors start querying it. A rejection here just means it parsed already.
-            await page.waitForLoadState('domcontentloaded').catch(() => undefined);
             return { outcome: 'passed', type, elapsedMillis: Date.now() - startedAt, budgetMillis };
         }
     }
     return { outcome: 'stuck', type, elapsedMillis: Date.now() - startedAt, budgetMillis };
+}
+
+/**
+ * The whole Cloudflare gate, as one post-navigation step.
+ *
+ * Waiting clears the non-interactive variant. What it never clears is the one with the "Verify you
+ * are human" checkbox — for that, Crawlee's `handleCloudflareChallenge` aims a real
+ * `page.mouse.click` (with a randomized offset) at where the widget renders, because the checkbox
+ * lives in a cross-origin iframe that no selector of ours can reach into.
+ *
+ * That helper throws a `SessionError` when it finds the hard "Sorry, you have been blocked" page or
+ * when the challenge survives its clicks. We deliberately let that propagate, because Crawlee
+ * answers a `SessionError` by retiring the session before reclaiming the request — which is what
+ * buys the retry a new IP and a new browser. Note that it *does* still cost one of the request's
+ * three retries (`_requestFunctionErrorHandler` increments `retryCount` for every retryable error,
+ * `SessionError` included); `maxSessionRotations` is a second, higher ceiling of 10, not a way
+ * around `maxRequestRetries`.
+ */
+export async function passCloudflare(ctx: PlaywrightCrawlingContext): Promise<void> {
+    const { page, request, session, handleCloudflareChallenge } = ctx;
+
+    const waited = await settleCloudflareChallenge(page);
+    if (waited.outcome !== 'stuck') {
+        recordChallengeOutcome(request, waited.outcome);
+        if (waited.outcome === 'passed') {
+            // Logged with its timing on purpose: this is the only way to find out what the
+            // challenge actually costs on Apify's shared CPU, which is where the budgets above are
+            // guesses. An `elapsedMillis` creeping towards `budgetMillis` in production is the
+            // signal to raise DHGATE_CHALLENGE_TIMEOUT_MS.
+            log.info(
+                `Cleared Cloudflare challenge (${waited.type ?? 'unknown'}) by waiting ` +
+                    `${waited.elapsedMillis}ms of ${waited.budgetMillis}ms for ${request.url}`,
+            );
+        }
+        return;
+    }
+
+    // `elapsedMillis`, not `budgetMillis`: an escalated challenge shrinks its own budget mid-wait,
+    // so only the elapsed figure describes what this request actually cost.
+    log.info(
+        `Cloudflare challenge (${waited.type ?? 'unknown'}) still up after ${waited.elapsedMillis}ms ` +
+            `for ${request.url} — going for the checkbox`,
+    );
+    // Crawlee's own challenge detector keys off one specific footer node (`.ray-id`); ours reads
+    // the title and Cloudflare's `_cf_chl_opt`, which also survives localized interstitials. Hand
+    // ours in so the helper and the re-check below agree on what "still challenged" means.
+    await handleCloudflareChallenge({ verbose: true, isChallengeCallback: isChallengePage });
+
+    // The helper returns quietly — no click, no error — when it cannot find the element it aims at,
+    // so confirm rather than assume.
+    const clicked = await settleCloudflareChallenge(page);
+    if (clicked.outcome === 'stuck') {
+        // The title and the URL we are stuck on are the two things that tell a "challenge loop"
+        // (same interstitial, over and over) apart from a hard block page, which is the difference
+        // between "rotate IP" and "this fingerprint is burnt".
+        const stuckTitle = await page.title().catch(() => '(unreadable)');
+        log.warning(
+            `Cloudflare challenge (${clicked.type ?? 'unknown'}) survived the checkbox for ` +
+                `${request.url} — retiring session. On screen: "${stuckTitle}" at ${page.url()}`,
+        );
+        recordChallengeOutcome(request, 'stuck');
+        session?.retire();
+        return;
+    }
+
+    // A clean page here means the click worked. That is `passed`, not `none`, even though there is
+    // no challenge left to see: the status Crawlee recorded still belongs to the 403 interstitial,
+    // not to the document now on screen, and `effectiveStatus` has to know to ignore it.
+    recordChallengeOutcome(request, 'passed');
+    log.info(`Cleared Cloudflare challenge (${waited.type ?? 'unknown'}) by clicking for ${request.url}`);
 }
 
 /** Key under which the pre/post-navigation hooks record the outcome for the handlers. */

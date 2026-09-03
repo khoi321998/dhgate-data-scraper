@@ -35,6 +35,13 @@
             "type": "integer",
             "description": "Maximum number of requests that can be made by this crawler.",
             "default": 100
+        },
+        "proxyConfiguration": {
+            "title": "Proxy configuration",
+            "type": "object",
+            "description": "Proxy the browser goes through. Leave this alone unless you have a reason not to: DHGate is behind Cloudflare, so runs default to an Apify residential US exit, which gets challenged less often and gives each retried session a fresh IP. Datacenter proxies and no-proxy both still work, they just hit the 'Verify you are human' variant far more.",
+            "editor": "proxy",
+            "default": { "useApifyProxy": true, "apifyProxyGroups": ["RESIDENTIAL"], "apifyProxyCountry": "US" }
         }
     }
 }

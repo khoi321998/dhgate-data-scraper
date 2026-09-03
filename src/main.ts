@@ -10,9 +10,11 @@ import { Actor, log } from 'apify';
 import type { ActorInput, ProductSellerResponse } from './dto/index.js';
 import { pushItem } from './push.js';
 import { createRouter, LABELS } from './routes.js';
-import { recordChallengeOutcome, settleCloudflareChallenge } from './utils/cloudflare.js';
+import { chooseChrome } from './utils/browser.js';
+import { passCloudflare } from './utils/cloudflare.js';
 import { currentActorRunId, emptyResponse } from './utils/defaults.js';
 import { DEFAULT_SHIP_COUNTRY, extractDhgateShipCountry, normalizeDhgateHost } from './utils/parse.js';
+import { describeProxy, pickProxy } from './utils/proxy.js';
 import { reportedUrl } from './utils/request.js';
 
 // Initialize the Apify SDK
@@ -27,7 +29,35 @@ const {
     startUrls = [],
     maxRequestsPerCrawl = 100,
     mode = 'product_only',
+    proxyConfiguration: proxyInput,
 } = (await Actor.getInput<ActorInput>()) ?? ({} as ActorInput);
+
+// Runs default to a proxy rather than to a direct connection — see utils/proxy.ts for why that is
+// not a preference on a Cloudflare-fronted site, and for what counts as opting out.
+const proxyChoice = pickProxy(proxyInput);
+
+// `undefined` back from here means no proxy will be used — either because the input said so, or
+// because Apify Proxy was asked for and could not be reached. Those two are very different, and
+// only one of them is a problem, so they are logged differently.
+const proxyConfiguration = await Actor.createProxyConfiguration(proxyChoice.settings);
+if (proxyConfiguration) {
+    log.info(`Proxy: ${describeProxy(proxyChoice)}`);
+} else if (proxyChoice.settings.useApifyProxy !== false) {
+    // Locally this is the usual cause: `npm run start:dev` runs the script directly and never sees
+    // `~/.apify/auth.json`, so the SDK finds no token, warns, and carries on without a proxy. Use
+    // `apify run` (or set APIFY_TOKEN) to actually get one. On the platform the SDK throws instead.
+    log.warning(
+        'Proxy: none — Apify Proxy was requested but no token or password is available, so DHGate ' +
+            'is being hit from this machine’s own IP. Expect many more Cloudflare challenges.',
+    );
+} else {
+    log.info('Proxy: none — turned off in the input; hitting DHGate from this container’s own IP');
+}
+
+// Which browser binary we drive is the biggest single factor in how often Cloudflare challenges us,
+// so it is resolved and logged up front rather than buried in the launch options. See utils/browser.ts.
+const chrome = chooseChrome();
+log[chrome.useChrome ? 'info' : 'warning'](`Browser: ${chrome.description}`);
 
 // `seller_only` runs start from seller URLs; the other two modes start from
 // product URLs. Route each start URL to the matching handler accordingly.
@@ -65,10 +95,13 @@ const localeCookies = (shipCountry: string) => [
 const RETRY_DELAY_MILLIS = 5_000;
 
 const crawler = new PlaywrightCrawler({
-    // No proxy for now — running against DHGate directly. Measured, not assumed: the same IP that
-    // gets challenged in the browser answers HTTP 200 to curl with a plain Chrome User-Agent, and
-    // to a real Google Chrome. What DHGate refuses is the automated browser's fingerprint, so
-    // rotating IPs would buy nothing here — see utils/cloudflare.ts.
+    // Proxy is configurable and defaults to Apify RESIDENTIAL/US. Note what it does and does not
+    // fix: the earlier measurement still holds — the same IP that gets challenged in an automated
+    // browser answers 200 to curl and to a real Chrome, so the challenge is a *fingerprint*
+    // trigger, not an IP ban, and a proxy alone will not make it disappear. What a residential US
+    // exit buys is a gentler Cloudflare threat score (fewer interactive "Verify you are human"
+    // variants) and a fresh IP per retired session. See utils/cloudflare.ts.
+    proxyConfiguration,
     maxRequestsPerCrawl,
     // Crawlee treats 403 as "blocked" and throws in its own response handler, before any of our
     // code — including the challenge wait below — gets a say. But on DHGate every first hit is a
@@ -123,41 +156,31 @@ const crawler = new PlaywrightCrawler({
         },
     ],
     postNavigationHooks: [
-        // DHGate started serving a Cloudflare "Just a moment…" interstitial (HTTP 403) in front of
-        // its pages. It clears itself once the browser has run Cloudflare's JS — but only if we
-        // wait: the handlers' `detectBlocked` sees the 403 and throws instantly, burning all three
-        // retries on a challenge that was about to pass. Wait it out here, before any handler runs.
-        // See utils/cloudflare.ts for why this is a fingerprint problem, not an IP ban.
-        async ({ page, request, session }) => {
-            const { outcome, type, elapsedMillis, budgetMillis } = await settleCloudflareChallenge(page);
-            recordChallengeOutcome(request, outcome);
-
-            if (outcome === 'passed') {
-                // Logged with its timing on purpose: this is the only way to find out what the
-                // challenge actually costs on Apify's shared CPU, which is where the budgets in
-                // utils/cloudflare.ts are guesses. An `elapsedMillis` creeping towards
-                // `budgetMillis` in production is the signal to raise DHGATE_CHALLENGE_TIMEOUT_MS.
-                log.info(
-                    `Cleared Cloudflare challenge (${type ?? 'unknown'}) in ${elapsedMillis}ms ` +
-                        `of ${budgetMillis}ms for ${request.url}`,
-                );
-            } else if (outcome === 'stuck') {
-                // Either it never cleared, or it was the interactive "Verify you are human"
-                // checkbox, which no amount of waiting solves. Retire the session so the retry
-                // comes back with a fresh browser fingerprint and cookie jar — in practice that
-                // second attempt is waved straight through.
-                log.warning(
-                    `Cloudflare challenge (${type ?? 'unknown'}) did not clear in ${budgetMillis}ms ` +
-                        `for ${request.url} — retiring session`,
-                );
-                session?.retire();
-            }
-        },
+        // DHGate serves a Cloudflare "Just a moment…" interstitial (HTTP 403) in front of its
+        // pages. It has to be dealt with here, before any handler runs: the handlers' `detectBlocked`
+        // sees the 403 and throws instantly, burning all three retries on a challenge that was
+        // about to pass. See utils/cloudflare.ts for the two ways past it.
+        passCloudflare,
     ],
+    // Crawlee injects a generated fingerprint (usually a Windows Chrome UA and matching JS shims)
+    // by default. That helps a bundled Chromium and actively hurts a real one: the spoofed
+    // navigator says Windows while the platform APIs, fonts and GPU strings underneath say Linux,
+    // and *that mismatch* is precisely what Cloudflare grades. A real Chrome's own consistent
+    // fingerprint beats a fabricated one, so when we have Chrome, we let it speak for itself.
+    browserPoolOptions: { useFingerprints: !chrome.useChrome },
     launchContext: {
+        // The real Google Chrome, not Playwright's bundled Chromium — the single biggest lever on
+        // how often we get challenged at all. `executablePath` is the one utils/browser.ts actually
+        // probed for, so Crawlee does not have to guess a second time.
+        useChrome: chrome.useChrome,
         launchOptions: {
+            executablePath: chrome.executablePath,
             args: [
                 '--disable-gpu', // Mitigates the "crashing GPU process" issue in Docker containers
+                // Playwright does not set this itself (only its MCP layer does). Without it Blink
+                // leaves the automation flag on, which `navigator.webdriver` reports and every bot
+                // check reads first.
+                '--disable-blink-features=AutomationControlled',
             ],
         },
     },
