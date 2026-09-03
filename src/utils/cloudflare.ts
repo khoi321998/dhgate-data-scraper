@@ -137,6 +137,29 @@ async function readChallengeType(page: Page): Promise<string | null> {
         .catch(() => null);
 }
 
+/**
+ * Is there a checkbox on screen right now — a laid-out Turnstile widget, not a hidden one?
+ *
+ * This is the signal that actually decides how long waiting is worth, and it is checked because
+ * `_cf_chl_opt.cType` cannot be relied on: on the platform it reads `null` (the config object is
+ * not exposed on every variant), and a `null` type used to buy the full non-interactive minute
+ * even with the checkbox already rendered — 60s of waiting, then one click that cleared it.
+ *
+ * Presence of the hidden input is not enough: the managed/invisible variants embed Turnstile too
+ * and solve themselves. Only a widget with a real box is something a click can land on, which is
+ * why this measures rather than just querying — the same rule {@link turnstileClickPosition} aims by.
+ */
+async function turnstileCheckboxVisible(page: Page): Promise<boolean> {
+    return page
+        .evaluate(() => {
+            const token = document.querySelector('input[name="cf-turnstile-response"]');
+            const host = token?.parentElement?.querySelector(':scope > div');
+            const r = host?.getBoundingClientRect();
+            return r != null && r.width > 0 && r.height > 0;
+        })
+        .catch(() => false);
+}
+
 /** What a challenge cost us, so the budgets above can be tuned from evidence rather than guesswork. */
 export interface ChallengeResult {
     outcome: ChallengeOutcome;
@@ -149,13 +172,17 @@ export interface ChallengeResult {
 }
 
 /**
- * How long a challenge of this flavour is worth waiting on. Waiting is the *only* move against the
- * non-interactive variant — there is no checkbox on that page for {@link passCloudflare} to click —
- * so it gets the long budget. The interactive one gets barely any, because clicking solves it and
- * every second here delays that click.
+ * How long this challenge is worth waiting on.
+ *
+ * A visible checkbox settles it regardless of what Cloudflare calls the variant: waiting does not
+ * solve that page, clicking does, and every second spent here delays the click. It is checked first
+ * precisely because the type is the less trustworthy of the two — it reads `null` on the platform.
+ *
+ * Without a checkbox, waiting is the *only* move — there is nothing for {@link passCloudflare} to
+ * click — so an unlabelled challenge keeps the long budget.
  */
-function budgetFor(type: string | null): number {
-    if (type === 'interactive') return INTERACTIVE_TIMEOUT_MILLIS;
+function budgetFor(type: string | null, checkboxVisible: boolean): number {
+    if (checkboxVisible || type === 'interactive') return INTERACTIVE_TIMEOUT_MILLIS;
     if (type === 'managed') return MANAGED_TIMEOUT_MILLIS;
     return CHALLENGE_TIMEOUT_MILLIS;
 }
@@ -173,7 +200,8 @@ export async function settleCloudflareChallenge(page: Page): Promise<ChallengeRe
     }
 
     let type = await readChallengeType(page);
-    let budgetMillis = budgetFor(type);
+    let checkbox = await turnstileCheckboxVisible(page);
+    let budgetMillis = budgetFor(type, checkbox);
 
     const startedAt = Date.now();
     // The budget is re-read every iteration rather than frozen into a deadline, because the branch
@@ -182,17 +210,25 @@ export async function settleCloudflareChallenge(page: Page): Promise<ChallengeRe
         await sleep(POLL_INTERVAL_MILLIS);
 
         if (await isChallengePage(page)) {
-            // Cloudflare can escalate a non-interactive challenge into the checkbox one while we
-            // are sitting on it. Nothing about waiting solves that second one, so re-read the type
-            // and cut the budget the moment it flips — otherwise a request that needs one click
-            // burns the full non-interactive minute first.
-            const current = await readChallengeType(page);
-            if (current && current !== type) {
-                log.info(
-                    `Cloudflare escalated the challenge: ${type ?? 'unknown'} -> ${current}, cutting the wait short`,
-                );
-                type = current;
-                budgetMillis = budgetFor(current);
+            // Two things can change under us, and both shorten the wait. Cloudflare can escalate a
+            // non-interactive challenge into the checkbox one; and the checkbox itself is mounted a
+            // moment *after* the page loads, so a challenge that looked unlabelled and click-less on
+            // the first reading grows a widget a second later. Re-read both and cut the budget the
+            // moment either says "this one needs a click" — otherwise a request that needs one click
+            // burns the full minute first, which is exactly what the platform runs were doing.
+            const currentType = await readChallengeType(page);
+            const currentCheckbox = await turnstileCheckboxVisible(page);
+            if ((currentType && currentType !== type) || currentCheckbox !== checkbox) {
+                const next = budgetFor(currentType ?? type, currentCheckbox);
+                if (next !== budgetMillis) {
+                    log.info(
+                        `Cloudflare challenge changed: type ${type ?? 'unknown'} -> ${currentType ?? 'unknown'}, ` +
+                            `checkbox ${checkbox} -> ${currentCheckbox}; wait budget now ${next}ms`,
+                    );
+                    budgetMillis = next;
+                }
+                type = currentType ?? type;
+                checkbox = currentCheckbox;
             }
             continue;
         }

@@ -30,8 +30,9 @@ export interface ProxyChoice {
  * @param enableProxy the `enableProxy` input. Defaults to on, because a run that says nothing about
  *   proxies on a Cloudflare-fronted site should not be the one going out bare.
  */
-export function pickProxy(enableProxy: boolean = true): ProxyChoice {
-    return enableProxy ? { settings: DEFAULT_PROXY, enabled: true } : { settings: { useApifyProxy: false }, enabled: false };
+export function pickProxy(enableProxy = true): ProxyChoice {
+    if (!enableProxy) return { settings: { useApifyProxy: false }, enabled: false };
+    return { settings: DEFAULT_PROXY, enabled: true };
 }
 
 /** One line for the startup log: where we are going out from. */
