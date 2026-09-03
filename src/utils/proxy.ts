@@ -5,14 +5,23 @@ import type { ProxyInput } from '../dto/index.js';
  * it is not really a preference. The site is behind Cloudflare, and a run coming from the
  * container's own IP draws the interactive "Verify you are human" variant far more often — and,
  * once a session is burnt, has no second IP to retry from. So a run that says nothing gets a proxy.
+ * *Which* proxy is the cheaper question — see {@link DEFAULT_PROXY}.
  *
  * Opting out stays possible (`useApifyProxy: false`); it just has to be said out loud.
  */
 
-/** What a run gets when it expresses no preference. Mirrors the default in `.actor/input_schema.json`. */
+/**
+ * What a run gets when it expresses no preference. Mirrors the default in `.actor/input_schema.json`.
+ *
+ * Datacenter rather than residential: the challenge on DHGate is triggered by the *browser
+ * fingerprint*, not by the IP — the very same exit answers 200 to curl and to a hand-driven Chrome —
+ * so the extra cost of a residential exit was buying a smaller edge than its price suggests. A
+ * datacenter exit still gives each retired session a fresh IP, which is the part that matters here.
+ * Switching back is a one-word change in the input: `apifyProxyGroups: ["RESIDENTIAL"]`.
+ */
 export const DEFAULT_PROXY: ProxyInput = {
     useApifyProxy: true,
-    apifyProxyGroups: ['RESIDENTIAL'],
+    apifyProxyGroups: ['DATACENTER'],
     apifyProxyCountry: 'US',
 };
 

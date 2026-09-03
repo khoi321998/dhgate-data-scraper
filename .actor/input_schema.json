@@ -39,9 +39,9 @@
         "proxyConfiguration": {
             "title": "Proxy configuration",
             "type": "object",
-            "description": "Proxy the browser goes through. Leave this alone unless you have a reason not to: DHGate is behind Cloudflare, so runs default to an Apify residential US exit, which gets challenged less often and gives each retried session a fresh IP. Datacenter proxies and no-proxy both still work, they just hit the 'Verify you are human' variant far more.",
+            "description": "Proxy the browser goes through. Runs default to an Apify datacenter US exit: DHGate's Cloudflare challenge keys off the browser fingerprint rather than the IP, so what a proxy really buys here is a fresh IP for every retried session. Set the group to RESIDENTIAL if you want the gentler threat score, or turn the proxy off to hit DHGate from the container's own IP (expect far more 'Verify you are human').",
             "editor": "proxy",
-            "default": { "useApifyProxy": true, "apifyProxyGroups": ["RESIDENTIAL"], "apifyProxyCountry": "US" }
+            "default": { "useApifyProxy": true, "apifyProxyGroups": ["DATACENTER"], "apifyProxyCountry": "US" }
         }
     }
 }

@@ -4,7 +4,8 @@
       "Bash(node -e ' *)",
       "Bash(node \"C:/Users/khoit/AppData/Local/Temp/claude/d--ApifyScript-DhGatePlatform-dhgate-data-scraper/4ebf15e2-9612-4f90-9a47-4149d04fe41e/scratchpad/verify-position.mjs\")",
       "Bash(node ./verify-position.tmp.mjs)",
-      "Bash(apify validate-schema *)"
+      "Bash(apify validate-schema *)",
+      "PowerShell(npx eslint src/utils/cloudflare.ts src/utils/proxy.ts src/dto/input.ts test/proxy.test.ts)"
     ]
   }
 }

@@ -83,6 +83,18 @@ const MANAGED_TIMEOUT_MILLIS = millisFromEnv('DHGATE_MANAGED_CHALLENGE_TIMEOUT_M
 const MAX_SNAPSHOTS = Math.max(0, Number(process.env.DHGATE_MAX_CHALLENGE_SNAPSHOTS ?? 5) || 0);
 
 /**
+ * Cap for the *before the click* screenshots, counted separately from {@link MAX_SNAPSHOTS}.
+ *
+ * Separate on purpose: these two answer different questions, and sharing one budget would let a run
+ * spend it all on pre-click frames and leave the actual failure — the thing that says why we gave
+ * up — unrecorded.
+ */
+const MAX_PRECLICK_SNAPSHOTS = Math.max(
+    0,
+    Number(process.env.DHGATE_MAX_PRECLICK_SNAPSHOTS ?? MAX_SNAPSHOTS) || 0,
+);
+
+/**
  * How many times we are willing to actually click the checkbox before accepting the answer is no.
  *
  * Crawlee's helper loops a hard-coded ten times, which at the human pace of {@link clickLikeAHuman}
@@ -390,6 +402,53 @@ async function markClickPoints(page: Page, points: ClickPoint[]): Promise<void> 
 /** Counts against {@link MAX_SNAPSHOTS}. Module state on purpose: the cap is per run, not per request. */
 let snapshotsTaken = 0;
 
+/** Same, for {@link MAX_PRECLICK_SNAPSHOTS}. */
+let preclickSnapshotsTaken = 0;
+
+/**
+ * The challenge page as it looks the instant *before* we click the checkbox.
+ *
+ * The failure snapshot only ever shows the aftermath — a widget that has already refused, or a page
+ * that has moved on — which cannot answer whether the checkbox was even rendered where we aimed at
+ * the moment we aimed. This one can: put it side by side with the failure PNG and the difference is
+ * what the click did.
+ *
+ * Nothing is drawn on the page here, unlike {@link snapshotChallenge}: this runs *before* the click,
+ * on a page Turnstile is actively grading, so the DOM is left exactly as Cloudflare rendered it. The
+ * target coordinates go into the accompanying JSON instead of onto the pixels.
+ */
+async function snapshotBeforeClick(
+    page: Page,
+    request: Request,
+    attempt: number,
+    point: ClickPoint,
+): Promise<void> {
+    if (preclickSnapshotsTaken >= MAX_PRECLICK_SNAPSHOTS) return;
+    preclickSnapshotsTaken++;
+
+    const key = `challenge-${request.id ?? 'unknown'}-${request.retryCount}-preclick-${attempt}`;
+    try {
+        // Taken first: the screenshot is the record, and the measurements around it are worth
+        // nothing if the frame itself was missed.
+        await Actor.setValue(key, await page.screenshot(), { contentType: 'image/png' });
+        await Actor.setValue(`${key}-meta`, {
+            url: request.url,
+            loadedUrl: page.url(),
+            retryCount: request.retryCount,
+            at: new Date().toISOString(),
+            attempt,
+            // Where this click is about to go, next to what the page looked like when we measured it.
+            target: point,
+            details: await describeChallengePage(page),
+        });
+        log.info(`  saved the pre-click screenshot as "${key}" (png), "${key}-meta"`);
+    } catch (error) {
+        // Diagnostics must never be the thing that fails a run — and least of all here, where
+        // throwing would cost us the click itself.
+        log.warning(`Could not snapshot the page before clicking: ${(error as Error).message}`);
+    }
+}
+
 /**
  * Put the challenge page in the key-value store: a PNG, the HTML, and the measurements.
  *
@@ -550,6 +609,10 @@ export async function passCloudflare(ctx: PlaywrightCrawlingContext): Promise<vo
                     `Clicking the Cloudflare checkbox (try ${clickPoints.length}/${MAX_CLICKS}) at ` +
                         `${Math.round(x)},${Math.round(y)}`,
                 );
+                // Before the click, not after: this is the only chance to see the widget in the
+                // state we are aiming at. `clickPage` rather than the outer `page` — the helper
+                // hands in the page it is actually driving.
+                await snapshotBeforeClick(clickPage, request, clickPoints.length, { x, y });
                 await clickLikeAHuman(clickPage, x, y);
             },
             // `clickLikeAHuman` already spends ~3-4s letting Turnstile verify, so the helper's own

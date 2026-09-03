@@ -21,7 +21,7 @@ export interface ActorInput {
     mode: CaptureMode;
     /**
      * Proxy to route the browser through. Omitting it does *not* mean "no proxy" — `main.ts`
-     * falls back to an Apify residential US exit. `useApifyProxy: false` is how you opt out.
+     * falls back to an Apify datacenter US exit. `useApifyProxy: false` is how you opt out.
      */
     proxyConfiguration?: ProxyInput;
 }
