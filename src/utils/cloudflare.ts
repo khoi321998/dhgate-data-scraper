@@ -82,6 +82,18 @@ const MANAGED_TIMEOUT_MILLIS = millisFromEnv('DHGATE_MANAGED_CHALLENGE_TIMEOUT_M
 /** How many challenge snapshots one run may write, so a bad run cannot fill the key-value store. */
 const MAX_SNAPSHOTS = Math.max(0, Number(process.env.DHGATE_MAX_CHALLENGE_SNAPSHOTS ?? 5) || 0);
 
+/**
+ * How many times we are willing to actually click the checkbox before accepting the answer is no.
+ *
+ * Crawlee's helper loops a hard-coded ten times, which at the human pace of {@link clickLikeAHuman}
+ * is about 55 seconds — and four attempts of that overran the Actor's 300s timeout, killing the run
+ * before it could report anything. Three is not a compromise forced by the clock either: if a
+ * correctly-aimed click is going to be accepted, it is accepted early, and a fourth identical click
+ * at the same coordinates tests nothing the first three did not. The remaining loop iterations still
+ * run — they are what notices the challenge clearing — they just stop clicking.
+ */
+const MAX_CLICKS = Math.max(1, Number(process.env.DHGATE_MAX_CHALLENGE_CLICKS ?? 3) || 3);
+
 /** How often to re-check whether the interstitial is gone. */
 const POLL_INTERVAL_MILLIS = 500;
 
@@ -433,9 +445,28 @@ async function reportStuckChallenge(
     clicks: ClickPoint[] = [],
 ): Promise<void> {
     const details = await describeChallengePage(page);
+
+    // Printed as flat text rather than left to the structured second argument, because the whole
+    // point is to read the verdict off the Apify console without opening the key-value store —
+    // and because a run that dies on its timeout leaves nothing in that store to open.
+    const geometry = (b: { x: number; y: number; w: number; h: number } | null | undefined) =>
+        b ? `${b.x},${b.y} ${b.w}x${b.h}` : 'not found';
+    const summary = details
+        ? [
+              `title="${details.title}"`,
+              `turnstilePresent=${details.hasToken}`,
+              `widget=[${geometry(details.widget)}]`,
+              `crawleeAnchor=[${geometry(details.crawleeAnchor)}]`,
+              `clicked=[${clicks.map((c) => `${Math.round(c.x)},${Math.round(c.y)}`).join(' ') || 'nothing'}]`,
+          ].join(' ')
+        : '(page unreadable)';
+
     const key = await snapshotChallenge(page, request, details, clicks);
-    const saved = key ? ` — saved as "${key}", "${key}-html" and "${key}-meta" in the key-value store` : '';
-    log.warning(`Cloudflare: ${what} for ${request.url} at ${page.url()}${saved}`, details ?? undefined);
+    log.warning(`Cloudflare: ${what}`);
+    log.warning(`  at ${page.url()}`);
+    log.warning(`  ${summary}`);
+    log.warning(`  on screen: ${details?.text?.slice(0, 160) ?? '(unreadable)'}`);
+    if (key) log.warning(`  saved: "${key}" (png), "${key}-html", "${key}-meta"`);
 }
 
 /**
@@ -499,9 +530,13 @@ export async function passCloudflare(ctx: PlaywrightCrawlingContext): Promise<vo
             // fallback we want when no widget is on the page to measure.
             clickPositionCallback: turnstileClickPosition as (page: Page) => Promise<{ x: number; y: number }>,
             clickCallback: async (clickPage, { x, y }) => {
+                // Past the cap this becomes a no-op so the helper's remaining rounds cost a second
+                // each instead of five — the loop keeps watching for the challenge to clear, which
+                // is the only thing those later rounds were ever contributing.
+                if (clickPoints.length >= MAX_CLICKS) return;
                 clickPoints.push({ x, y });
                 log.info(
-                    `Clicking the Cloudflare checkbox (try ${clickPoints.length}) at ` +
+                    `Clicking the Cloudflare checkbox (try ${clickPoints.length}/${MAX_CLICKS}) at ` +
                         `${Math.round(x)},${Math.round(y)}`,
                 );
                 await clickLikeAHuman(clickPage, x, y);
@@ -509,6 +544,9 @@ export async function passCloudflare(ctx: PlaywrightCrawlingContext): Promise<vo
             // `clickLikeAHuman` already spends ~3-4s letting Turnstile verify, so the helper's own
             // pause between rounds is cut to keep a round near five seconds rather than eight.
             preChallengeSleepSecs: 1,
+            // Trimmed from the default 10 for the same timeout reason: the last click has already
+            // been followed by its own few seconds of settling, so this is a margin, not the wait.
+            sleepSecs: 6,
         });
     } catch (error) {
         // The helper throws `SessionError` once its clicks are spent. That is the right outcome and
