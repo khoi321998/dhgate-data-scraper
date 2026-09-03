@@ -200,6 +200,75 @@ export async function settleCloudflareChallenge(page: Page): Promise<ChallengeRe
 }
 
 /**
+ * Where the "Verify you are human" checkbox actually is.
+ *
+ * Crawlee's helper aims at `.main-content div` and offsets a fixed `+30, +25` from its top-left.
+ * That is a guess about layout, and on DHGate it lands around (223, 158) — top-left of a 1920x1080
+ * screen, nowhere near a centred widget. So aim at the thing itself instead: the checkbox lives in
+ * an iframe Cloudflare serves from `challenges.cloudflare.com`, and while its *contents* are
+ * cross-origin and unreadable, the iframe *element* sits in our document and measures fine.
+ *
+ * Inside that frame Turnstile puts the checkbox on the left, vertically centred — hence `+30` across
+ * and half the height down. Returning `undefined` leaves Crawlee's own guess in place, which is the
+ * right fallback: on a page with no widget there is nothing better to aim at anyway.
+ */
+async function turnstileClickPosition(page: Page): Promise<{ x: number; y: number } | undefined> {
+    const box = await page
+        .evaluate(() => {
+            const frame = [...document.querySelectorAll('iframe')].find(
+                (f) =>
+                    /challenges\.cloudflare\.com|\/cdn-cgi\/challenge-platform\//.test(f.src) ||
+                    /cloudflare security challenge/i.test(f.title),
+            );
+            if (!frame) return null;
+            const r = frame.getBoundingClientRect();
+            // A zero-sized frame is mounted but not laid out yet — aiming at it would miss.
+            return r.width > 0 && r.height > 0 ? { x: r.x, y: r.y, height: r.height } : null;
+        })
+        .catch(() => null);
+
+    return box ? { x: box.x + 30, y: box.y + box.height / 2 } : undefined;
+}
+
+/** A number in `[min, max)`, for the small human variations below. */
+function jitter(min: number, max: number): number {
+    return min + Math.random() * (max - min);
+}
+
+/**
+ * Click the checkbox the way a person would.
+ *
+ * Crawlee's built-in click is `page.mouse.click(x, y)` — the pointer teleports to the target and
+ * fires, with no movement before it — repeated twice per round for ten rounds. Both halves of that
+ * are a problem, and neither is about coordinates: Turnstile grades the pointer's *history* leading
+ * into the click, so an instant jump reads as automation, and twenty clicks in ten seconds on the
+ * same spot reads as hammering. This was measured, not guessed — a hand-driven click on the very
+ * same page passes.
+ *
+ * So: approach from somewhere else, travel in steps, pause on the target before pressing, hold the
+ * button for a human moment, then give Turnstile time to verify before anyone clicks again. The
+ * numbers are jittered because a *constant* delay is its own fingerprint.
+ */
+async function clickLikeAHuman(page: Page, x: number, y: number): Promise<void> {
+    // Start off-target and to one side, the way a pointer arrives from elsewhere on the page.
+    await page.mouse.move(x - jitter(90, 220), y + jitter(40, 130));
+    await sleep(jitter(120, 300));
+
+    // `steps` is what turns one jump into a path of intermediate mousemove events.
+    await page.mouse.move(x, y, { steps: Math.round(jitter(16, 30)) });
+    // A real pointer settles on the target before the button goes down.
+    await sleep(jitter(180, 420));
+
+    await page.mouse.down();
+    await sleep(jitter(60, 140)); // press duration, not a pause between clicks
+    await page.mouse.up();
+
+    // Turnstile needs a couple of seconds to verify. Clicking again during that window is both
+    // pointless and the exact behaviour its bot heuristics are looking for.
+    await sleep(jitter(2_800, 4_200));
+}
+
+/**
  * What the challenge page is actually made of, read straight from its DOM.
  *
  * Worth its own function because the log alone cannot tell two very different failures apart: a
@@ -313,16 +382,43 @@ export async function passCloudflare(ctx: PlaywrightCrawlingContext): Promise<vo
         `Cloudflare challenge (${waited.type ?? 'unknown'}) still up after ${waited.elapsedMillis}ms ` +
             `for ${request.url} — going for the checkbox`,
     );
-    // Crawlee's own challenge detector keys off one specific footer node (`.ray-id`); ours reads
-    // the title and Cloudflare's `_cf_chl_opt`, which also survives localized interstitials. Hand
-    // ours in so the helper and the re-check below agree on what "still challenged" means.
+    // Providing `clickCallback` takes the clicking away from the helper entirely — see
+    // `clickLikeAHuman` for why its own is the thing that was failing. Crawlee only logs the click
+    // it performs itself, so with ours in place the counter below is the sole record that a click
+    // happened at all, which is exactly the "did it actually click?" question the logs could not
+    // answer before.
+    let clicks = 0;
     try {
-        await handleCloudflareChallenge({ verbose: true, isChallengeCallback: isChallengePage });
+        await handleCloudflareChallenge({
+            verbose: true,
+            // Crawlee's own challenge detector keys off one specific footer node (`.ray-id`); ours
+            // reads the title and Cloudflare's `_cf_chl_opt`, which also survives localized
+            // interstitials. Hand ours in so the helper and the re-check below agree on what "still
+            // challenged" means.
+            isChallengeCallback: isChallengePage,
+            // The cast is safe and deliberate: the option is typed as always returning a point, but
+            // the helper guards it (`const pos = await clickPositionCallback(page); if (pos) …`), so
+            // `undefined` means "keep your own guess" rather than crashing. That is exactly the
+            // fallback we want when no widget is on the page to measure.
+            clickPositionCallback: turnstileClickPosition as (page: Page) => Promise<{ x: number; y: number }>,
+            clickCallback: async (clickPage, { x, y }) => {
+                clicks++;
+                log.info(`Clicking the Cloudflare checkbox (try ${clicks}) at ${Math.round(x)},${Math.round(y)}`);
+                await clickLikeAHuman(clickPage, x, y);
+            },
+            // `clickLikeAHuman` already spends ~3-4s letting Turnstile verify, so the helper's own
+            // pause between rounds is cut to keep a round near five seconds rather than eight.
+            preChallengeSleepSecs: 1,
+        });
     } catch (error) {
         // The helper throws `SessionError` once its clicks are spent. That is the right outcome and
         // it goes on to the caller untouched — but it is also the last moment the challenge page
         // still exists, so the evidence has to be collected here or not at all.
-        await reportStuckChallenge(page, request, `clicks did not clear the (${waited.type ?? 'unknown'}) challenge`);
+        await reportStuckChallenge(
+            page,
+            request,
+            `${clicks} click(s) did not clear the (${waited.type ?? 'unknown'}) challenge`,
+        );
         recordChallengeOutcome(request, 'stuck');
         throw error;
     }
@@ -331,10 +427,14 @@ export async function passCloudflare(ctx: PlaywrightCrawlingContext): Promise<vo
     // so confirm rather than assume.
     const clicked = await settleCloudflareChallenge(page);
     if (clicked.outcome === 'stuck') {
+        // `clicks === 0` here is its own diagnosis: the helper never found a widget to aim at, so
+        // nothing was ever clicked and the coordinates are not what needs fixing.
         await reportStuckChallenge(
             page,
             request,
-            `the (${clicked.type ?? 'unknown'}) challenge outlived the checkbox, retiring session`,
+            clicks === 0
+                ? `no widget to click — the (${clicked.type ?? 'unknown'}) challenge is still up, retiring session`
+                : `the (${clicked.type ?? 'unknown'}) challenge outlived ${clicks} click(s), retiring session`,
         );
         recordChallengeOutcome(request, 'stuck');
         session?.retire();
@@ -345,7 +445,9 @@ export async function passCloudflare(ctx: PlaywrightCrawlingContext): Promise<vo
     // no challenge left to see: the status Crawlee recorded still belongs to the 403 interstitial,
     // not to the document now on screen, and `effectiveStatus` has to know to ignore it.
     recordChallengeOutcome(request, 'passed');
-    log.info(`Cleared Cloudflare challenge (${waited.type ?? 'unknown'}) by clicking for ${request.url}`);
+    log.info(
+        `Cleared Cloudflare challenge (${waited.type ?? 'unknown'}) after ${clicks} click(s) for ${request.url}`,
+    );
 }
 
 /** Key under which the pre/post-navigation hooks record the outcome for the handlers. */
